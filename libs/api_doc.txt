@@ -1,0 +1,149 @@
+```
+                CUTLASS PROGRAMMING & DEBUGGING GUIDE
+         (General, cross-architecture; correctness-focused)
+```
+
+===============================================================================
+
+## TABLE OF CONTENTS
+
+PART 1: CORE CONCEPTS (Layouts, Strides, Problem Shapes, Epilogues)
+PART 2: “HELLO GEMM” WITH CUTLASS (Minimal patterns you’ll actually use)
+PART 3: CORRECTNESS DEBUGGING CHECKLIST (Common mistakes & fixes)
+PART 4: NUMERICS & EPILOGUES (Alpha/Beta, type casts, saturation)
+PART 5: PRACTICAL TOOLS & WORKFLOWS (Profiler, reference checks, diffs)
+PART 6: PYTORCH/NUMPY INTEROP NOTES (Shapes/strides do’s & don’ts)
+
+===============================================================================
+PART 1: CORE CONCEPTS
+=====================
+
+1. **Layouts & Strides (the #1 source of silent bugs)**
+
+   * CUTLASS uses explicit *layout tags* (e.g., `cutlass::layout::RowMajor`, `cutlass::layout::ColumnMajor`) to map logical indices to memory. The layout defines which dimension is contiguous (stride = 1). Misstating layout vs. the actual memory strides of your buffer yields correct-looking launches with wrong results. ([NVIDIA Docs][1])
+   * A tensor’s *leading dimension* (LD, or *lda/ldb/ldc*) is the stride (in elements) between adjacent rows/columns depending on layout. Always compute LD from the underlying buffer’s true strides, not from its shape. ([NVIDIA Docs][2])
+
+2. **GEMM API mental model (device-level)**
+
+   * Device-level GEMM in CUTLASS instantiates a templated `cutlass::gemm::device::Gemm<...>` (or other device ops). You pass problem size `(M, N, K)`, tensor refs (pointer + layout + leading dim), scalars `(alpha, beta)`, and an epilogue. Internally, CUTLASS decomposes work across threadblocks/warps/instructions; you only need to supply correct shapes/strides/types. ([NVIDIA Docs][3])
+
+3. **Layouts vs. transpose flags**
+
+   * In CUTLASS, you typically *encode layout* with the type (RowMajor/ColumnMajor) rather than flipping a runtime transpose flag. If input `A` is stored row-major, instantiate `LayoutA = RowMajor`. If your math says `A^T`, either pre-transpose or choose the GEMM variant/layouts that naturally represent it. Mixing “transpose in math” with “RowMajor vs ColumnMajor in memory” is a classic source of confusion. ([NVIDIA Docs][3])
+
+4. **Epilogues & fused ops**
+
+   * The epilogue applies `D = alpha * Accum + beta * C` and may fuse extra ops (bias, activation, etc.) via Epilogue Visitor Trees (EVT). Using an epilogue with the wrong accumulator/output types (or wrong alpha/beta) frequently explains small but systematic mismatches vs. PyTorch. ([NVIDIA Docs][3])
+
+5. **Versions & hierarchy (just enough context)**
+
+   * CUTLASS evolves (e.g., 2.x layout tags carry into 3.x/4.x). The uniform GEMM model and layout semantics remain stable for correctness reasoning, independent of GPU generation. ([NVIDIA Docs][4])
+
+===============================================================================
+PART 2: “HELLO GEMM” WITH CUTLASS
+=================================
+
+A minimal, portable pattern you’ll see in most examples:
+
+* **Types**: Choose `ElementA/B/C/Accumulator` (e.g., `float`, `half_t`, `bfloat16_t`) and matching *layouts* for A/B/C (RowMajor or ColumnMajor). ([NVIDIA Docs][3])
+* **Problem size**: `(M, N, K)` follow the standard GEMM `C[M x N] = A[M x K] * B[K x N]`. Confirm that your tensors’ physical shapes/strides are consistent with this contract. ([NVIDIA Docs][3])
+* **Tensor refs**: Construct CUTLASS `TensorRef`/`TensorView` with pointer + layout + *leading dimension in elements*. A wrong LD that “happens to run” is a top cause of silent wrong answers. ([NVIDIA Docs][1])
+* **Launch**: Build the device `Gemm` op; pass problem size, alpha/beta, and tensor refs for A,B,C,D. Start simple (no fancy epilogue), then add fusion once you match a known-good reference. ([NVIDIA Docs][3])
+
+===============================================================================
+PART 3: CORRECTNESS DEBUGGING CHECKLIST
+=======================================
+
+Use this list when results don’t match a reference. Fix items in order.
+
+A. **Shape/Layout/Stride sanity**
+
+1. **M/N/K binding**: Double-check that `A` is `[M,K]`, `B` is `[K,N]`, and `C/D` are `[M,N]` in *memory*, not just in math notation. If your buffers are transposed relative to storage, fix the layout types or reorder dims. ([NVIDIA Docs][3])
+2. **Leading dimensions**: For RowMajor: `ld = columns`; for ColumnMajor: `ld = rows`. If there’s padding, ld is the *padded* stride in elements. Never pass `ld=shape_axis` blindly if you have non-contiguous storage. ([NVIDIA Docs][1])
+3. **Alpha/Beta semantics**: If you intended GEMM overwrite (`D = A*B`), set `beta = 0` and ensure `C` is either ignored or zeroed. If you see unexpected remnants in `D`, you likely left `beta = 1` with a nonzero `C`. ([NVIDIA Docs][3])
+
+B. **Dtype/accumulator/epilogue**
+4) **Accumulator type**: Low-precision inputs (FP16/BF16/INT8) usually accumulate in higher precision (e.g., FP32). If you accumulate in too-low precision or cast down too early in the epilogue, small discrepancies amplify. ([NVIDIA Docs][3])
+5) **Epilogue fusion**: Extra ops (bias, activation) change results. Compare first against a *plain* epilogue, then add fusion once you match. ([Colfax Research][5])
+
+C. **Reference comparisons**
+6) **CUTLASS host/device reference**: Compare against CUTLASS’s built-in host/device reference GEMMs to isolate your issue from framework differences. Start with small matrices (e.g., 128 multiples) and random seeds. ([Tianyu Guo's homepage][6])
+7) **cuBLAS or Profiler**: CUTLASS Profiler can run GEMM and (optionally) use cuBLAS as a reference. If it matches there but not in your integration, the bug is almost surely in your layouts/strides/alpha-beta wiring. ([NVIDIA Docs][7])
+
+D. **Framework interop**
+8) **Strides from framework**: When taking inputs from PyTorch/NumPy/DLPack, read *strides*, not shapes, to compute `ld*`. Treat non-contiguous tensors carefully—`.contiguous()` may change both layout and leading dims. ([NVIDIA Docs][2])
+9) **Transpose confusion**: “`x.t()` in Torch” ≠ “change layout tag.” If you pass a *transposed view* still stored in row-major, your CUTLASS layout must still reflect row-major with updated leading dim. Otherwise you silently read the wrong elements. ([NVIDIA Docs][1])
+
+E. **Edge cases & alignment**
+10) **Zero sizes / non-multiples**: Verify kernels support your sizes (some tuned kernels prefer specific tile multiples). If in doubt, pick a universal GEMM that handles general sizes. ([NVIDIA Docs][3])
+11) **Pointer alignment & `AlignmentA/B`**: If you set an alignment larger than what your pointers/strides actually satisfy, you can get wrong results or kernel failures. Start conservative (alignment = 1 or 2) before raising it. ([NVIDIA Docs][4])
+
+F. **Numerical tolerance**
+12) **Epsilon choice**: Differences vs. PyTorch can stem from reduction order, dtype casts, or epilogue. Use dtype-appropriate tolerances; if needed, accumulate in FP32 and cast late. (See active forum threads on matching PyTorch.) ([NVIDIA Developer Forums][8])
+
+===============================================================================
+PART 4: NUMERICS & EPILOGUES
+============================
+
+1. **Alpha/Beta**
+   `D = alpha * (A·B) + beta * C`. If you expect overwrite semantics, choose `beta = 0`. If you compare to a baseline that wrote into a fresh tensor, but your call leaves `beta=1` with a nonzero `C`, you’ll see offsets. ([NVIDIA Docs][3])
+
+2. **Type conversions**
+   Typical pattern: inputs in FP16/BF16, *accumulator in FP32*, output cast back to FP16/BF16 in epilogue. Move the cast as late as possible to reduce error; beware fused activations that operate in lower precision. ([NVIDIA Docs][3])
+
+3. **Epilogue Visitor Trees (EVT)**
+   When fusing bias/GELU/ReLU/etc., confirm the function acts in the intended precision and compares apples-to-apples with your reference framework (e.g., exact GELU polynomial). Start unfused, validate, then fuse. ([Colfax Research][5])
+
+===============================================================================
+PART 5: PRACTICAL TOOLS & WORKFLOWS
+===================================
+
+1. **CUTLASS Profiler**
+   Build and run the Profiler to sweep kernels and validate a problem against cuBLAS. If Profiler + cuBLAS agree but your app diverges, the bug is almost certainly *interop* (layout/stride/alpha-beta). ([NVIDIA Docs][7])
+
+2. **Reference implementations**
+   Use CUTLASS host/device references (and/or cuBLAS) for truth. Keep a small battery of `(M,N,K)` sizes (e.g., 64/128/192/255 mismatched edges) with fixed RNG seeds and compare absolute/relative error. ([Tianyu Guo's homepage][6])
+
+3. **Quickstart sanity**
+   The official quickstart shows how to configure target arch lists and kernel sets; even if you target newer GPUs, the examples illustrate correct wiring of layouts and lda/ldb/ldc. Use them as a minimal template. ([NVIDIA Docs][9])
+
+4. **Learning resources**
+   High-level tutorials clarify GEMM decomposition and “feed the beast” concepts (copies vs. math). They’re performance-oriented but also help you reason about where correctness can go wrong (e.g., tile edges, padding). ([Colfax Research][10])
+
+===============================================================================
+PART 6: PYTORCH/NUMPY INTEROP NOTES
+===================================
+
+* **Read strides, not shapes**: Derive `lda/ldb/ldc` from the buffer’s actual strides in *elements*. For RowMajor tensors from PyTorch/NumPy, the last dimension usually has stride 1. After transposes or slicing, this may change—never assume. ([NVIDIA Docs][2])
+* **Make contiguous (intentionally)**: If you `.contiguous()` a transposed tensor, you *change its memory layout* back to row-major contiguous. Update layout tags and leading dims accordingly; otherwise you’ll silently read the wrong elements. ([NVIDIA Docs][1])
+* **Streams & integration**: CUTLASS device ops can take a CUDA stream; ensure your caller passes the correct stream if you expect concurrency with framework ops. Mismatched streams cause “heisenbugs” that look like correctness errors. ([GitHub][11])
+
+===============================================================================
+APPENDIX: COMMON PITFALLS (TL;DR)
+=================================
+
+* Passing `lda/ldb/ldc = logical_dim` instead of actual *stride in elements*. (Most frequent bug.) ([NVIDIA Docs][1])
+* Declaring `LayoutA/B/C` that disagrees with how the data is really stored. (RowMajor vs ColumnMajor mismatch.) ([NVIDIA Docs][1])
+* Expecting overwrite but using `beta=1` with nonzero `C`. (Residual values leak into `D`.) ([NVIDIA Docs][3])
+* Casting down in the epilogue too early; under-accumulating precision. (Use FP32 accum when possible.) ([NVIDIA Docs][3])
+* Assuming a “transpose flag” fixes storage—*layout is a type*. Use the right layout tag or reorder data. ([NVIDIA Docs][3])
+* Overstating `AlignmentA/B` relative to pointer/stride alignment. Start conservative, raise after validation. ([NVIDIA Docs][4])
+* Comparing against a fused PyTorch graph without reproducing the exact fusion/precision in CUTLASS epilogue. (Start unfused.) ([Colfax Research][5])
+* Blaming kernels when Profiler+cuBLAS+CUTLASS reference agree—99% chance it’s your interop wiring. ([NVIDIA Docs][7])
+
+===============================================================================
+END
+===
+
+[1]: https://docs.nvidia.com/cutlass/media/docs/cpp/layout.html?utm_source=chatgpt.com "Layouts and Tensors — NVIDIA CUTLASS Documentation"
+[2]: https://docs.nvidia.com/cutlass/media/docs/pythonDSL/cute_dsl_general/framework_integration.html?utm_source=chatgpt.com "Integration with Frameworks"
+[3]: https://docs.nvidia.com/cutlass/media/docs/cpp/gemm_api.html?utm_source=chatgpt.com "CUTLASS GEMM API"
+[4]: https://docs.nvidia.com/cutlass/media/docs/cpp/gemm_api_3x.html?utm_source=chatgpt.com "CUTLASS 3.0 GEMM API"
+[5]: https://research.colfax-intl.com/epilogue_visitor_tree/?utm_source=chatgpt.com "Epilogue Fusion in CUTLASS with Epilogue Visitor Trees"
+[6]: https://gty111.github.io/2023/03/20/learn-cutlass-0/?utm_source=chatgpt.com "learn-cutlass-0 - Tianyu Guo's homepage"
+[7]: https://docs.nvidia.com/cutlass/media/docs/cpp/profiler.html?utm_source=chatgpt.com "CUTLASS Profiler"
+[8]: https://forums.developer.nvidia.com/t/cutlass-2-layer-mlp-does-not-match-output-of-pytorch-equivalent-for-atol-1e-3-help-me-explain-what-is-going-on/345745?utm_source=chatgpt.com "CUTLASS 2 layer MLP does not match output of PyTorch ..."
+[9]: https://docs.nvidia.com/cutlass/media/docs/cpp/quickstart.html?utm_source=chatgpt.com "Quickstart — NVIDIA CUTLASS Documentation"
+[10]: https://research.colfax-intl.com/cutlass-tutorial-design-of-a-gemm-kernel/?utm_source=chatgpt.com "CUTLASS Tutorial: Efficient GEMM kernel designs with ..."
+[11]: https://github.com/NVIDIA/cutlass/issues/922?utm_source=chatgpt.com "NVIDIA/cutlass - [QST] Limiting GEMM and specifying stream"
+
