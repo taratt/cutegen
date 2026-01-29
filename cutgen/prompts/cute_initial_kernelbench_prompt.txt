@@ -1,0 +1,176 @@
+You write custom CUDA kernels using CUTE to replace the pytorch operators in the given architecture to get speedups.
+
+Here's an example to show you the syntax of inline embedding custom CUTE/CUDA operators in torch: The example given architecture is:
+```
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class Model(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def forward(self, a, b):
+        return a + b
+
+
+def get_inputs():
+    # randomly generate input tensors based on the model architecture
+    a = torch.randn(1, 128).cuda()
+    b = torch.randn(1, 128).cuda()
+    return [a, b]
+
+
+def get_init_inputs():
+    # randomly generate tensors required for initialization based on the model architecture
+    return []
+```
+
+The example new arch with custom CUTE kernels looks like this:
+```
+import os
+import torch
+import torch.nn as nn
+from torch.utils.cpp_extension import load_inline
+
+atb_cpp_decl = r\"\"\"
+#include <torch/extension.h>
+torch::Tensor atb_gemm(torch::Tensor A, torch::Tensor B);
+\"\"\"
+
+atb_cuda_src = r\"\"\"
+#include <torch/extension.h>
+#include <cuda_runtime.h>
+#include <c10/cuda/CUDAStream.h>
+
+#include <cute/tensor.hpp>
+
+// Kernel: GEMM C = A^T * B
+template <class TA, class TB, class TC>
+__global__ static void
+gemm_device(cute::Shape<int,int,int> shape_MNK,
+            TA const* A, cute::Stride<int,int> dA,
+            TB const* B, cute::Stride<int,int> dB,
+            TC      * C, cute::Stride<int,int> dC)
+{
+  using namespace cute;
+
+  // Represent full tensors
+  Tensor mA = make_tensor(make_gmem_ptr(A), make_shape(shape_MNK[0], shape_MNK[2]), dA); // (M,K)
+  Tensor mB = make_tensor(make_gmem_ptr(B), make_shape(shape_MNK[1], shape_MNK[2]), dB); // (N,K)
+  Tensor mC = make_tensor(make_gmem_ptr(C), make_shape(shape_MNK[0], shape_MNK[1]), dC); // (M,N)
+
+  // Tile
+  auto cta_tiler = make_shape(Int<128>{}, Int<128>{}, Int<8>{});
+  auto cta_coord = make_coord(blockIdx.x, blockIdx.y, _);
+  Tensor gA = local_tile(mA, cta_tiler, cta_coord, Step<_1,X,_1>{});
+  Tensor gB = local_tile(mB, cta_tiler, cta_coord, Step<X,_1,_1>{});
+  Tensor gC = local_tile(mC, cta_tiler, cta_coord, Step<_1,_1,X>{});
+
+  // Shared memory
+  __shared__ TA smemA[128*8];
+  __shared__ TB smemB[128*8];
+  Tensor sA = make_tensor(make_smem_ptr(smemA), make_shape(Int<128>{}, Int<8>{}));
+  Tensor sB = make_tensor(make_smem_ptr(smemB), make_shape(Int<128>{}, Int<8>{}));
+
+  // Thread layouts
+  auto tA = make_layout(make_shape(Int<32>{}, Int<8>{}));
+  auto tB = make_layout(make_shape(Int<32>{}, Int<8>{}));
+  auto tC = make_layout(make_shape(Int<16>{}, Int<16>{}));
+
+  Tensor tAgA = local_partition(gA, tA, threadIdx.x);
+  Tensor tAsA = local_partition(sA, tA, threadIdx.x);
+  Tensor tBgB = local_partition(gB, tB, threadIdx.x);
+  Tensor tBsB = local_partition(sB, tB, threadIdx.x);
+
+  Tensor tCsA = local_partition(sA, tC, threadIdx.x, Step<_1,X>{});
+  Tensor tCsB = local_partition(sB, tC, threadIdx.x, Step<X,_1>{});
+  Tensor tCgC = local_partition(gC, tC, threadIdx.x, Step<_1,_1>{});
+
+  Tensor tCrC = make_tensor_like(tCgC);
+  clear(tCrC);
+
+  // Loop over K
+  int K_TILE_MAX = size<2>(tAgA);
+  for (int k_tile = 0; k_tile < K_TILE_MAX; ++k_tile) {
+    copy(tAgA(_,_,k_tile), tAsA);
+    copy(tBgB(_,_,k_tile), tBsB);
+
+    cp_async_fence();
+    cp_async_wait<0>();
+    __syncthreads();
+
+    gemm(tCsA, tCsB, tCrC);
+    __syncthreads();
+  }
+
+  // Epilogue
+  axpby(1.0f, tCrC, 0.0f, tCgC);
+}
+
+// Host wrapper
+torch::Tensor atb_gemm(torch::Tensor A, torch::Tensor B) {
+  TORCH_CHECK(A.is_cuda() && B.is_cuda(), "A and B must be CUDA tensors");
+  TORCH_CHECK(A.dim()==2 && B.dim()==2,  "A and B must be 2D");
+  TORCH_CHECK(A.scalar_type()==at::kFloat && B.scalar_type()==at::kFloat,
+              "Expect float32 tensors");
+
+  // A:[K,M], B:[K,N] → C = A^T @ B
+  int K = (int)A.size(0);
+  int M = (int)A.size(1);
+  int N = (int)B.size(1);
+  TORCH_CHECK((int)B.size(0)==K, "B.size(0) must equal K");
+
+  auto A_c = A.contiguous();
+  auto B_c = B.contiguous();
+  auto C   = torch::empty({M, N}, A.options());
+
+  auto ptrA = A_c.data_ptr<float>();
+  auto ptrB = B_c.data_ptr<float>();
+  auto ptrC = C.data_ptr<float>();
+
+  auto dA = make_stride(Int<1>{}, M);
+  auto dB = make_stride(Int<1>{}, N);
+  auto dC = make_stride(Int<1>{}, N);
+  auto shape_MNK = make_shape(M, N, K);
+
+  dim3 dimBlock(256);
+  dim3 dimGrid((M+127)/128, (N+127)/128);
+
+  cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
+  gemm_device<<<dimGrid, dimBlock, 0, stream>>>(shape_MNK, ptrA, dA, ptrB, dB, ptrC, dC);
+
+  auto err = cudaGetLastError();
+  TORCH_CHECK(err == cudaSuccess, "CUTE gemm launch failed: ", cudaGetErrorString(err));
+
+  return C;
+}
+\"\"\"
+
+cutlass_atb = load_inline(
+    name="cutlass_atb_inline",
+    cpp_sources=atb_cpp_decl,               # forward declaration (wrapper sees the symbol)
+    cuda_sources=atb_cuda_src,              # implementation lives here
+    functions=["atb_gemm"],                 # auto-generate pybind wrapper
+    # extra_include_paths=[], NO NEED TO INCLUDE EXTRA BECAUSE CUTLASS HEADERS IN PATH ALREADY
+    extra_cflags=["-O3"],
+    extra_cuda_cflags=["-O3"],              # DO NOT ADD gencode, JUST LET COMPILER TO FIND AVAILABLE ARCH, BECAUSE THIS LATER WILL BE TESTED
+    verbose=False,
+)
+
+class ModelNew(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self._ext = cutlass_atb
+
+    def forward(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+        return self._ext.atb_gemm(A, B)
+```
+
+Here's the architecture you need to optimize:
+```
+<REF>
+```
+Implement the architecture named Model with custom CUTE operators! Name your output architecture ModelNew, and make sure that it uses CUTE/CUDA kernels that you wrote for all of the underlying computation in forward(). Make sure that the written CUTE is correct and complete, and that it implements the requested functions. Output the new code in CODEBLOCKS (wrap in ``` and ```). Please generate real code, NOT pseudocode, make sure the code compiles and is fully functional. Just output the new model code, no other text, and NO testing code! This is very important! Generate ONLY ONE kernel for the entire torch module, not one kernel per operator.
+

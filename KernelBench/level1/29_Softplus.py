@@ -21,8 +21,8 @@ class Model(nn.Module):
         return torch.nn.functional.softplus(x)
 
 batch_size = 4096
-dim = 393216
-
+#dim = 393216
+dim  = 131072
 def get_inputs():
     x = torch.rand(batch_size, dim)
     return [x]

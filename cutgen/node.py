@@ -6,7 +6,7 @@ import torch
 import os
 import json
 
-from skxoss.util import debug_print
+from cutgen.util import debug_print
 
 class ErrorType(Enum):
     NONE = 0
@@ -44,7 +44,7 @@ class Correction:
 
 class Node:
     def __init__(self, ref, src="", prev_src="", ref_time=None, save_folder_path="", depth=0):
-        self.uuid = str(uuid4()) + "-" + str(int(time.time()))
+        #self.uuid = str(uuid4()) + "-" + str(int(time.time()))
         self.ref = ref
         self.ref_time = ref_time
 
@@ -61,6 +61,7 @@ class Node:
         self.save_folder_path = save_folder_path
 
         self.depth = depth
+        self.uuid = str(depth)+"_"+time.strftime("%Y%m%d-%H%M%S", time.localtime())
 
         debug_print(f"Node {self.uuid} initialized")
 

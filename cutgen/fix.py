@@ -1,11 +1,11 @@
 import random
 import json
 
-from skxoss.node import Node
-from skxoss.config import LLM_CONFIG_CODEGEN, COMPILE_LOG_CHARS, LLM_CONFIG_CODEGEN, SKXOSS_BASE_PATH
-from skxoss.llm_api import create_llm_server_from_config
-from skxoss.util import extract_first_code, read_file, get_numbered_lines, src_to_lines, lines_to_src, debug_print
-from skxoss.code_editor import code_edit_apply_patches
+from cutgen.node import Node
+from cutgen.config import LLM_CONFIG_CODEGEN, COMPILE_LOG_CHARS, LLM_CONFIG_CODEGEN, SKXOSS_BASE_PATH
+from cutgen.llm_api import create_llm_server_from_config
+from cutgen.util import extract_first_code, read_file, get_numbered_lines, src_to_lines, lines_to_src, debug_print
+from cutgen.code_editor import code_edit_apply_patches
 
 def get_compile_suggestions(node: Node):
     llm_server = create_llm_server_from_config(random.choice(LLM_CONFIG_CODEGEN))
@@ -15,8 +15,8 @@ def get_compile_suggestions(node: Node):
 ```
 The error is:
 {node.metadata['compile'][0:min(len(node.metadata['compile']), COMPILE_LOG_CHARS)]}
-Please generate some useful suggestions for fixing the compile error; here's an doc that might have useful information:
-{read_file(SKXOSS_BASE_PATH + "/libs/api_doc.txt")}
+Generate some useful suggestions for fixing the compile error; here's an doc that might have useful information:
+{read_file(SKXOSS_BASE_PATH + "/cutgen/prompts/debug_guideline.txt")}
 """
     llm_response = llm_server(prompt)
     return llm_response
@@ -29,8 +29,8 @@ def get_correctness_suggestions(node: Node):
 ```
 The error is:
 {node.metadata['correct'][0:min(len(node.metadata['correct']), COMPILE_LOG_CHARS)]}
-Please generate some useful suggestions for fixing the correctness error; here's an doc that might have useful information:
-{read_file(SKXOSS_BASE_PATH + "/libs/api_doc.txt")}
+Generate some useful suggestions for fixing the correctness error; here's a doc that might have useful information:
+{read_file(SKXOSS_BASE_PATH + "/cutgen/prompts/debug_guideline.txt")}
 """
     llm_response = llm_server(prompt)
     return llm_response
@@ -49,7 +49,7 @@ The error is:
 {node.metadata['compile'][0:min(len(node.metadata['compile']), COMPILE_LOG_CHARS)]}
 {f"Here are some potentially useful suggestions for fixing the compile error: {suggestions}" if retrieve else ""}
 Follow the original structure of the code (The optimized output architecture is named ModelNew with custom CUDA kernel(s)). 
-Please generate real code, NOT pseudocode, make sure the code compiles and is fully functional. Just output the new model code, no other text, and NO testing code! This is very important! Output the new code in CODEBLOCKS (wrap in ``` and ```). ONLY fix the compile error, do not change the intended functionality of the code and its optimization techniques!{addendum}
+Generate real code, NOT pseudocode, make sure the code compiles and is fully functional. Just output the new model code, no other text, and NO testing code! This is very important! Output the new code in CODEBLOCKS (wrap in ``` and ```). ONLY fix the compile error, do not change the intended functionality of the code and its optimization techniques!{addendum}
 """
     llm_response = llm_server(prompt)
     src = extract_first_code(llm_response)
@@ -76,7 +76,7 @@ def _fix_compile_edits(node: Node, addendum="", retrieve=False):
 The error is:
 {node.metadata['compile'][0:min(len(node.metadata['compile']), COMPILE_LOG_CHARS)]}
 {f"Here are some potentially useful suggestions for fixing the compile error: {suggestions}" if retrieve else ""}
-Please fix the compile error. DO NOT change the intent of the code by making the CUDA code simpler or use less CUDA. 
+Fix the compile error. DO NOT change the intent of the code by making the CUDA code simpler or use less CUDA. 
 
 You will output a list of edits to the code. The semantics of the edits is described below:
 {prompt_content}
@@ -91,12 +91,12 @@ Do not use pre-optimized libraries like cuBLAS, do not change the intended preci
         edits = extract_first_code(llm_response, code_language_types=["json", "python", ""])
         edits = json.loads(edits)
         edits = edits if isinstance(edits, list) else [edits]
-        debug_print(edits)
+        #debug_print(edits)
         src_lines = code_edit_apply_patches(src_lines, edits)
         src = lines_to_src(src_lines)
         return src, fix
     except Exception as e:
-        debug_print(f"Error parsing edits: {e}")
+        debug_print(f"Error parsing edits: {edits} ")
         return node.src, fix
 
 def _fix_correct_edits(node: Node, addendum="", retrieve=False):
@@ -120,7 +120,7 @@ The reference code, which you can use to reason about the intended operation, is
 {node.ref}
 ```
 {f"Here are some potentially useful suggestions for fixing the correctness error: {suggestions}" if retrieve else ""}
-Please fix the correctness error. DO NOT change the intent of the code by making the CUDA code simpler or use less CUDA. 
+Fix the correctness error. DO NOT change the intent of the code by making the CUDA code simpler or use less CUDA. 
 
 You will output a list of edits to the code. The semantics of the edits is described below:
 {prompt_content}
@@ -130,12 +130,13 @@ Do not use pre-optimized libraries like cuBLAS, do not change the intended preci
 """
     llm_response = llm_server(prompt)
     fix = [llm_response]
+    #debug_print(fix)
     try:
         edits = extract_first_code(llm_response, code_language_types=["json", "python", ""])
         edits = json.loads(edits)
-        debug_print("EDITS: ", edits)
+      #  debug_print("EDITS: "+edits)
         edits = edits if isinstance(edits, list) else [edits]
-        debug_print(llm_response)
+        #debug_print(llm_response)
         src_lines = code_edit_apply_patches(src_lines, edits)
         src = lines_to_src(src_lines)
         return src, fix
@@ -160,8 +161,8 @@ The reference code, which you can use to reason about the intended operation, is
 The error is:
 {node.metadata['correct'][0:min(len(node.metadata['correct']), COMPILE_LOG_CHARS)]}
 {f"Here are some potentially useful suggestions for fixing the correctness error: {suggestions}" if retrieve else ""}
-Please fix the correctness error. DO NOT change the intent of the code by making the CUDA code simpler or use less CUDA. 
-Please generate real code, NOT pseudocode, make sure the code compiles and is fully functional. Just output the new model code, no other text, and NO testing code! This is very important! Output the new code in CODEBLOCKS (wrap in ``` and ```). ONLY fix the correctness error, do not change the intended functionality of the code and its optimization techniques!{addendum}
+Fix the correctness error. DO NOT change the intent of the code by making the CUDA/CUTE code simpler or use less CUDA/CUTE. 
+Generate real code, NOT pseudocode, make sure the code compiles and is fully functional. Just output the new model code, no other text, and NO testing code! This is very important! Output the new code in CODEBLOCKS (wrap in ``` and ```). ONLY fix the correctness error, do not change the intended functionality of the code and its optimization techniques!{addendum}
 """
     llm_response = llm_server(prompt)
     src = extract_first_code(llm_response)

@@ -1,10 +1,10 @@
-from skxoss.node import Node, ErrorType
-from skxoss.evaluate import evaluate
-from skxoss.validate import validate
-from skxoss.codegen import codegen_initial, codegen_optimize
+from cutgen.node import Node, ErrorType
+from cutgen.evaluate import evaluate
+from cutgen.validate import validate
+from cutgen.codegen import codegen_initial, codegen_optimize
 
-from skxoss.config import MAX_RETRY_ATTEMPTS, CODEGEN_INITIAL_MODE, CODEGEN_OPTIMIZE_MODE
-from skxoss.util import debug_print, load_json, read_file_with_lock
+from cutgen.config import MAX_RETRY_ATTEMPTS, CODEGEN_INITIAL_MODE, CODEGEN_OPTIMIZE_MODE
+from cutgen.util import debug_print, load_json, read_file_with_lock
 
 def run(node: Node, code_optimize_addendum="", codegen_initial_addendum="", fix_compile_addendum="", fix_correct_addendum=""):
     retry_count = 0

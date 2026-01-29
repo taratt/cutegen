@@ -1,9 +1,9 @@
-from skxoss.node import Node, ErrorType
-from skxoss.evaluate import evaluate
+from cutgen.node import Node, ErrorType
+from cutgen.evaluate import evaluate
 
-from skxoss.config import MAX_FIX_ATTEMPTS, FIX_COMPILE_MODE, FIX_CORRECT_MODE, FIX_RETRIEVE
-from skxoss.fix import fix_compile, fix_correct
-from skxoss.util import debug_print
+from cutgen.config import MAX_FIX_ATTEMPTS, FIX_COMPILE_MODE, FIX_CORRECT_MODE, FIX_RETRIEVE
+from cutgen.fix import fix_compile, fix_correct
+from cutgen.util import debug_print
 
 def validate(node: Node, fix_compile_addendum="", fix_correct_addendum=""):
     """

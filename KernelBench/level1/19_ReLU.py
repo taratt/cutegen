@@ -19,9 +19,12 @@ class Model(nn.Module):
             torch.Tensor: Output tensor with ReLU applied, same shape as input.
         """
         return torch.relu(x)
+#
+# batch_size = 4096
+# dim = 393216
 
 batch_size = 4096
-dim = 393216
+dim = 131072
 
 def get_inputs():
     x = torch.rand(batch_size, dim)

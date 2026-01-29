@@ -5,8 +5,9 @@ import re
 import shutil
 import json
 import hashlib
+from typing import Optional, Tuple, Any, List
 
-from skxoss.config import DEBUG_PRINT, SKXOSS_BASE_PATH, GPU_LOCK_FILE
+from cutgen.config import DEBUG_PRINT, SKXOSS_BASE_PATH, GPU_LOCK_FILE
 
 def debug_print(msg: str):
     if DEBUG_PRINT:
@@ -76,7 +77,6 @@ def release_gpu(device, gpu_lock_fd):
         return # This is for double-free case found in 295 -- if we have a compile/reward error and reach the end of counter/while loop, it will double unlock.
     fcntl.flock(gpu_lock_fd.fileno(), fcntl.LOCK_UN)
 
-
 def extract_first_code(output_string: str, code_language_types: list[str] = ["python", "cpp", "c"]) -> str:
     """
     Extract first code block from model output, specified by code_language_type
@@ -100,6 +100,72 @@ def extract_first_code(output_string: str, code_language_types: list[str] = ["py
         return code
 
     return None
+def parse_code_and_edit(output_string: str, code_language_types: list[str] = ["python", "cpp", "c"]) -> Tuple[Optional[str], Optional[Any]]:
+    """
+      Extract the first non-JSON fenced code block and the first JSON fenced block.
+
+      Returns:
+          (code_text, edits_obj)
+          - code_text: str or None — contents of the first non-JSON code fence.
+            If the fence has a language tag (e.g., ```python), it is stripped.
+          - edits_obj: parsed JSON (usually list/dict) or None — from the first
+            ```json fenced block. If JSON parsing fails, returns None.
+
+      Notes:
+          - If `code_language_types` is provided, and the first non-JSON block's
+            language tag is present among the list (e.g., ["python","cpp","c"]),
+            the tag is simply ignored (content is returned as-is either way).
+          - If there is a JSON-looking block without an explicit `json` tag,
+            we attempt to parse it as JSON as a fallback.
+      """
+    if code_language_types is None:
+        code_language_types = ["python", "cpp", "c", "cuda", "bash", "text"]
+
+    text = output_string or ""
+
+    # Find all fenced code blocks: ```lang?\n...``` (lang is optional)
+    pattern = re.compile(r"```([a-zA-Z0-9_+-]*)\s*\n([\s\S]*?)```", re.MULTILINE)
+    blocks = pattern.findall(text)
+
+    first_code_text: Optional[str] = None
+    edits_obj: Optional[Any] = None
+    fallback_json_candidate: Optional[str] = None
+
+    for lang, body in blocks:
+        lang_lower = lang.strip().lower()
+
+        if lang_lower == "json":
+            # Try to parse immediately; take the first valid JSON block
+            candidate = body.strip()
+            try:
+                edits_obj = json.loads(candidate)
+                # Once JSON is found/parsed, we still continue to find the first non-JSON code
+            except Exception:
+                # Keep going; maybe another json block parses
+                pass
+        else:
+            # Consider this a candidate for the "code" block (first only)
+            if first_code_text is None:
+                # If the body itself starts with a language label line (rare), strip it
+                # but generally the language is provided in the backticks, so just trim.
+                first_code_text = body.strip()
+
+        # As a fallback, keep the first non-tag block that *might* be JSON
+        if not lang_lower:
+            candidate = body.strip()
+            if fallback_json_candidate is None:
+                # Quick-and-dirty heuristic to remember a potential JSON block
+                if candidate.startswith("{") or candidate.startswith("["):
+                    fallback_json_candidate = candidate
+
+    # If we didn't get a JSON block with tag=json, try the fallback candidate
+    if edits_obj is None and fallback_json_candidate is not None:
+        try:
+            edits_obj = json.loads(fallback_json_candidate)
+        except Exception:
+            pass
+
+    return first_code_text, edits_obj
 
 def remove_build_directory(build_directory: str):
     debug_print(f"build_directory to remove: {build_directory}")

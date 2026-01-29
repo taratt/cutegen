@@ -3,5 +3,8 @@
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
     <mapping directory="$PROJECT_DIR$" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cutgen/_third_party/cutlass" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cutgen/cutlass" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cutgen/third_party/cutlass" vcs="Git" />
   </component>
 </project>

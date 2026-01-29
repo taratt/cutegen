@@ -13,6 +13,7 @@ import anthropic
 TOGETHER_KEY = os.environ.get("TOGETHER_API_KEY")
 DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_KEY = "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"
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 SGLANG_KEY = os.environ.get("SGLANG_API_KEY")  # for Local Deployment
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -206,7 +207,7 @@ def query_server(
                 messages=[
                     {"role": "user", "content": prompt},
                 ],
-                reasoning_effort=reasoning_effort,
+            #    reasoning_effort=reasoning_effort,
                 max_completion_tokens=max_completion_tokens,
             )
         else:

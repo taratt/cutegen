@@ -1,0 +1,81 @@
+f"""
+You're given the following CUTE/CUDA source code:
+```
+<NODE_PRV_SRC>
+```
+Your task: Optimize this code using CUTE/CUDA.
+IMPORTANT: Implement ONLY ONE optimization attempt. Pick ONE optimization that is not already implemented.
+You must output REAL compilable code (not pseudocode) and preserve the original code structure:
+- Keep the same function names, arguments, and return types.
+- The optimized output architecture is named ModelNew with custom CUTE/CUDA kernel(s).
+- Output ONLY the new CUTE/CUDA code + torch glue code. No extra text, no explanations, no testing code.
+- Output the entire new code in ONE CODEBLOCK (wrap in ``` and ```).
+
+Before optimizing, infer what type of kernel this is:
+(A) Matrix Multiply / GEMM-like kernel (e.g., C = A @ B, A*C + A*D, batched GEMM, etc.)
+(B) Activation / Elementwise kernel (e.g., ReLU, tanh, sigmoid, GELU, add+relu, bias+relu, clamp, etc.)
+(C) Other (if neither fits, apply safe general GPU optimizations only)
+
+Your optimization choice MUST match the kernel type.
+
+===========================================================
+If the kernel is (A) Matrix Multiply / GEMM-like:
+Pick ONE of the following effective optimizations (only one):
+1) Threadblock-level tiling (CTA tiling for M/N/K)
+2) Warp-level tiling
+3) Thread-level tiling / vectorized loads
+4) Tensor Core mma operations (only if data types + layout allow it)
+5) Shared-memory bank conflict reduction (swizzling / layout transforms)
+6) Pipelining / multi-stage loads (cp.async if supported)
+7) Split-K (only if K dimension is very large AND reduction is bottleneck)
+8) Asynchronous loads/stores
+
+Rules for GEMM:
+- Pay close attention to matrix operand dimensions (M, N, K) and layouts/strides and how they compare to each other to deliver specific optimizations.
+- Pick the strongest optimization that matches the shapes.
+- Do NOT change precision.
+- Do NOT use cuBLAS/cuDNN or other pre-optimized libraries.
+- Do NOT fall back to PyTorch operators for any case.
+- It is acceptable to specialize to the exact shapes listed.
+
+===========================================================
+If the kernel is (B) Activation / Elementwise:
+Matmul optimizations like tensor cores, split-K, warp tiling for M/N/K, and matrix swizzling are NOT applicable.
+Pick ONE of the following elementwise optimizations (only one):
+1) Vectorized global memory loads/stores (float4/half2/etc.) when contiguous + aligned
+2) Grid-stride loop to cover arbitrary numel efficiently
+3) Reduce kernel launch overhead: fuse simple elementwise ops already present in the code (ONLY if they already exist in the original kernel computation; do not invent new semantics)
+4) Use fast math intrinsics safely (only for tanh/sigmoid/GELU-like kernels; keep outputs correct/stable)
+5) Improve tail handling + bounds checks to avoid invalid memory accesses
+6) Minimize register pressure / unnecessary temporaries
+7) Improve occupancy by choosing a better block size (128/256/512) WITHOUT changing semantics
+
+Rules for elementwise kernels:
+- Treat the tensor as a 1D array of length L = x.numel().
+- Memory access must be coalesced.
+- Avoid using shared memory unless there is clear data reuse (elementwise usually has none).
+- Keep correct behavior for all elements, including tail elements when L is not divisible by vector width.
+- Do NOT use or fall back to PyTorch ops even for special cases.
+- Do NOT change precision.
+- It is acceptable to specialize to the exact dtype and contiguous layout if the original code already assumes it.
+
+===========================================================
+If the kernel is (C) Other / unclear:
+Apply ONE safe general GPU optimization:
+- vectorized load/store OR
+- better bounds handling OR
+- grid-stride loop
+Do NOT introduce GEMM-specific assumptions.
+
+===========================================================
+Additional hard constraints:
+- Keep the given source code structure the same, including function names, arguments, return types, and extension loading style.
+- Generate complete working code that compiles.
+- Do not output multiple versions; implement exactly one optimization attempt.
+- Do not add any benchmark or test code.
+- Do not add extra commentary outside the code block.
+- Pay attention to alignment, indexing correctness, and avoiding out-of-bounds accesses.
+
+Make sure the optimized code implements the same functionality as the previous version.
+{addendum}
+"""

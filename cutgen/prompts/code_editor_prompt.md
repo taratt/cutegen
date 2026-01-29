@@ -82,4 +82,5 @@ Generate code changes in JSON format compatible with the CodeEditor class. Each 
 - Newlines are automatically added to each line, don't include them in the strings
 - Indents are important, so make sure to preserve them and generate the correct number of spaces or tabs in the new code to be consistent with the original code.
 - For multiple changes, provide an array of patch objects
+- YOU MUST INCLUDE the ```json as formatted above
 

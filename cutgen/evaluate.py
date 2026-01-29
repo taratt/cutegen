@@ -19,14 +19,26 @@ from torch.fx import symbolic_trace
 import GPUtil
 import psutil
 
-from skxoss.node import Node, ErrorType
-from skxoss.util import set_seed, debug_print, acquire_gpu, release_gpu, remove_build_directory, read_file_with_lock, write_file_with_lock
+import re
+from typing import Dict, Any, List
+
+from cutgen.node import Node, ErrorType
+from cutgen.util import set_seed, debug_print, acquire_gpu, release_gpu, remove_build_directory, read_file_with_lock, write_file_with_lock
 
 ####### CONSTANTS #######
-from skxoss.config import LOAD_MODEL_BACKOFF_TIME, RUN_MODEL_BACKOFF_TIME, GPU_REQ_SPACE, CPU_REQ_SPACE, BUILD_DIRECTORY_BASE, EVAL_RUN_TIMEOUT, BENCHMARK_TORCH_COMPILE, TORCH_COMPILE_MODE, EVAL_COLD_CACHE
+from cutgen.config import LOAD_MODEL_BACKOFF_TIME, RUN_MODEL_BACKOFF_TIME, GPU_REQ_SPACE, CPU_REQ_SPACE, BUILD_DIRECTORY_BASE, EVAL_RUN_TIMEOUT, BENCHMARK_TORCH_COMPILE, TORCH_COMPILE_MODE, EVAL_COLD_CACHE, NSIGHT_COMPUTE_BIN, NSIGHT_COMPUTE_SET, USE_PROFILING
 
 
 ####### EVALUATION HELPER FUNCTIONS #######
+import shutil
+
+def safe_rmtree(path: str):
+    """Delete a directory if it exists, ignore errors."""
+    try:
+        if path and os.path.exists(path):
+            shutil.rmtree(path, ignore_errors=True)
+    except Exception:
+        pass
 
 def load_original_model_and_inputs(ref: str, context: dict, metadata: dict) -> tuple[nn.Module, callable, callable]:
     try:
@@ -125,11 +137,216 @@ def _check_compile(ref_src, gen_src, metadata, build_directory=None):
         gc.collect()
         return False
     return True
-    
+
+def override_get_inputs_cpu(context: dict):
+    """
+    Wrap whatever get_inputs() currently is so it returns CPU tensors.
+    Works even if generated code's get_inputs() allocates CUDA tensors.
+    """
+    old_get_inputs = context.get("get_inputs", None)
+    if old_get_inputs is None:
+        return
+
+    def get_inputs_cpu():
+        xs = old_get_inputs()
+
+        out = []
+        for x in xs:
+            if isinstance(x, torch.Tensor):
+                # If generated code made it CUDA, bring it back to CPU
+                if x.is_cuda:
+                    x = x.detach().cpu()
+                else:
+                    x = x.detach()
+            out.append(x)
+        return out
+
+    context["get_inputs"] = get_inputs_cpu
+
+
+# def _check_correct(ref_src, gen_src, metadata,
+#                        num_trials=10, seed_num=42,
+#                        build_directory=None, device=None):
+#     """
+#     This function checks if the generated source code is correct.
+#     """
+#     torch.cuda.set_device(device)
+#     metadata["hardware"] = torch.cuda.get_device_name(device=device)
+#     metadata["device"] = str(device)
+#     context = {}
+#     os.environ["TORCH_USE_CUDA_DSA"] = "1"
+#     os.environ["CUDA_LAUNCH_BLOCKING"] = "0"  # Force synchronous execution for better error capture; TODO: don't block CUDA calls for better performance for now
+#
+#     # We already know the generated code compiles, so we can load the model
+#     Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(ref_src, context, metadata)
+#     debug_print(f"check correct: Loaded original model")
+#     ModelNew = load_custom_model(gen_src, context, metadata, build_directory)
+#     debug_print(f"check correct: Loaded custom model")
+#     # override_get_inputs_cpu(context)
+#     # get_inputs_fn = context["get_inputs"]
+#     try:
+#         set_seed(seed_num)
+#         init_inputs = get_init_inputs_fn()
+#         init_inputs = [
+#             x.cuda(device=metadata["device"]) if isinstance(x, torch.Tensor) else x for x in init_inputs
+#         ]
+#
+#         model = None
+#         with torch.no_grad():
+#             set_seed(seed_num)  # set seed for reproducible weights
+#             model = Model(*init_inputs).cuda(device=device)
+#         # debug_print(f"check correct: Initialized original model")
+#
+#         model_new = None
+#         try:
+#             with torch.no_grad():
+#                 set_seed(seed_num)  # set seed for reproducible weights
+#                 model_new = ModelNew(*init_inputs).cuda(device=device)
+#         except Exception as e:
+#             metadata["correct"] = f"Error initializing custom model: {e}"
+#             torch.cuda.empty_cache()
+#             torch.cuda.reset_peak_memory_stats()
+#             gc.collect()
+#             return False
+#
+#         pass_count = 0
+#         torch.manual_seed(seed_num)
+#         correctness_trial_seeds = [
+#             torch.randint(0, 2**32 - 1, (1,)).item() for _ in range(num_trials)
+#         ]
+#
+#         with torch.no_grad():
+#             for trial in range(num_trials):
+#                 # print(f"Checking correctness for trial {trial}")
+#                 trial_seed = correctness_trial_seeds[trial]
+#
+#                 set_seed(trial_seed)
+#                 inputs = get_inputs_fn()
+#
+#                 try:
+#                     inputs = [x.cuda(device=device) if isinstance(x, torch.Tensor) else x
+#                               for x in inputs]
+#                 except torch.cuda.OutOfMemoryError as e:
+#                     metadata["correct"] = f"OOM moving inputs to GPU: {e}"
+#                     torch.cuda.empty_cache()
+#                     gc.collect()
+#                     return False
+#
+#                 # # debug_print(f"check correct: Initialized inputs")
+#
+#                 set_seed(trial_seed)
+#                 # model_new = custom_model.cuda(device=device)
+#                 # # debug_print(f"check correct: Moved custom model to device")
+#                 #
+#                 # set_seed(trial_seed)
+#                 # model = original_model.cuda(device=device)
+#                 # # debug_print(f"check correct: Moved original model to device")
+#
+#                 try:
+#                     output_new = model_new(*inputs)
+#                     torch.cuda.synchronize(device=device)
+#                     # debug_print(f"check correct: Synchronized custom model")
+#                 except Exception as e:
+#                     metadata["correct"] = f"Runtime error when checking correctness: {str(e)}"
+#                     torch.cuda.empty_cache()
+#                     torch.cuda.reset_peak_memory_stats()
+#                     gc.collect()
+#                     return False
+#                 # cpu_new_output = output_new.detach().float().cpu()
+#                 # del output_new
+#                 # torch.cuda.empty_cache()
+#                 output = model(*inputs)
+#                 # debug_print(f"check correct: Computed output for original model")
+#                 try:
+#                     torch.cuda.synchronize(device=device)
+#                     # debug_print(f"check correct: Synchronized original model")
+#                 except Exception as e:
+#                     metadata["correct"] = f"Runtime error when checking correctness: {str(e)}"
+#                     torch.cuda.empty_cache()
+#                     torch.cuda.reset_peak_memory_stats()
+#                     gc.collect()
+#                     return False
+#                 # cpu_output = output.detach().float().cpu()
+#                 # del output
+#                 # torch.cuda.empty_cache()
+#
+#                 if output.shape != output_new.shape:
+#                     metadata["correct"] = f"Output shape mismatch, expected {output.shape}, got {output_new.shape}"
+#                     continue
+#                 # if cpu_output.shape != cpu_new_output.shape:
+#                 #     metadata[
+#                 #         "correct"] = f"Output shape mismatch, expected {cpu_output.shape}, got {cpu_new_output.shape}"
+#                 #     del inputs, cpu_output, cpu_new_output
+#                 #     gc.collect()
+#                 #     torch.cuda.empty_cache()
+#                 #     continue
+#
+#                 # if not torch.allclose(cpu_output, cpu_new_output, atol=1e-2, rtol=1e-2):
+#                 #     diff = (cpu_output - cpu_new_output).abs()
+#                 #     metadata["correct"] = f"Output value mismatch, max diff: {diff.max().item()}, avg diff: {diff.mean().item()}"
+#                 #     continue
+#
+#                 if not torch.allclose(
+#                     # output, output_new, atol=2.5e-02, rtol=2.5e-02
+#                     output.to(torch.float32), output_new.to(torch.float32), atol=1e-02, rtol=1e-02
+#                     # output, output_new, rtol=1e-01, atol=1e+2
+#                 ):
+#                     max_diff = torch.max(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
+#                     avg_diff = torch.mean(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
+#                     metadata["correct"] = f"Output value mismatch, max diff: {max_diff}, avg diff: {avg_diff}"
+#                     continue
+#                 else:
+#                     # if trial == num_trials - 1:
+#                     #     diff = (cpu_output - cpu_new_output).abs()
+#                     #     metadata["diff"] = f"Output value matched, max diff: {diff.max().item()}, avg diff: {diff.mean().item()}"
+#
+#                     if trial == num_trials - 1:
+#                         max_diff = torch.max(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
+#                         avg_diff = torch.mean(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
+#                         metadata["diff"] = f"Output value matched, max diff: {max_diff}, avg diff: {avg_diff}"
+#                     debug_print(f"check correct: Error checking output value: {str(e)}")
+#                 # debug_print(f"check correct: Checked output value")
+#                 del inputs
+#                 gc.collect()
+#                 torch.cuda.empty_cache()
+#                 pass_count += 1
+#
+#     except Exception as e:
+#         try:
+#             torch.cuda.synchronize(device=device)
+#         except Exception as e2:
+#             metadata["correct"] = f"Runtime error when checking correctness: {str(e)}; {str(e2)}"
+#             torch.cuda.empty_cache()
+#             torch.cuda.reset_peak_memory_stats()
+#             gc.collect()
+#             return False
+#         torch.cuda.empty_cache()
+#         torch.cuda.reset_peak_memory_stats()
+#         gc.collect()
+#         return False
+#
+#     try:
+#         torch.cuda.synchronize()
+#     except Exception as e:
+#         metadata["correct"] = f"Runtime error when checking correctness: {str(e)}"
+#         torch.cuda.empty_cache()
+#         torch.cuda.reset_peak_memory_stats()
+#         gc.collect()
+#         return False
+#
+#     metadata["correct"] = f"Passed {pass_count} out of {num_trials} trials: {metadata['correct'] if 'correct' in metadata else 'ALL PASSED'}"
+#     if 'diff' in metadata:
+#         metadata["correct"] += f"\n{metadata['diff']}"
+#     if 'diff' in metadata:
+#         del metadata['diff']
+#     if pass_count == num_trials:
+#         return True
+#     else:
+#         return False
 
 def _check_correct(ref_src, gen_src, metadata,
-                       num_trials=10, seed_num=42,
-                       build_directory=None, device=None):
+                   num_trials=10, seed_num=42,
+                   build_directory=None, device=None):
     """
     This function checks if the generated source code is correct.
     """
@@ -138,15 +355,16 @@ def _check_correct(ref_src, gen_src, metadata,
     metadata["device"] = str(device)
     context = {}
     os.environ["TORCH_USE_CUDA_DSA"] = "1"
-    os.environ["CUDA_LAUNCH_BLOCKING"] = "0"  # Force synchronous execution for better error capture; TODO: don't block CUDA calls for better performance for now
-    
+    os.environ[
+        "CUDA_LAUNCH_BLOCKING"] = "0"  # Force synchronous execution for better error capture; TODO: don't block CUDA calls for better performance for now
+
     # We already know the generated code compiles, so we can load the model
     Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(ref_src, context, metadata)
     # debug_print(f"check correct: Loaded original model")
     ModelNew = load_custom_model(gen_src, context, metadata, build_directory)
     # debug_print(f"check correct: Loaded custom model")
-    
-    try:    
+
+    try:
         set_seed(seed_num)
         init_inputs = get_init_inputs_fn()
         init_inputs = [
@@ -174,7 +392,7 @@ def _check_correct(ref_src, gen_src, metadata,
         pass_count = 0
         torch.manual_seed(seed_num)
         correctness_trial_seeds = [
-            torch.randint(0, 2**32 - 1, (1,)).item() for _ in range(num_trials)
+            torch.randint(0, 2 ** 32 - 1, (1,)).item() for _ in range(num_trials)
         ]
 
         with torch.no_grad():
@@ -226,9 +444,9 @@ def _check_correct(ref_src, gen_src, metadata,
                     continue
                 # debug_print(f"check correct: Checked output shape: {output.shape} vs. {output_new.shape}")
                 if not torch.allclose(
-                    # output, output_new, atol=2.5e-02, rtol=2.5e-02
-                    output.to(torch.float32), output_new.to(torch.float32), atol=1e-02, rtol=1e-02
-                    # output, output_new, rtol=1e-01, atol=1e+2
+                        # output, output_new, atol=2.5e-02, rtol=2.5e-02
+                        output.to(torch.float32), output_new.to(torch.float32), atol=1e-02, rtol=1e-02
+                        # output, output_new, rtol=1e-01, atol=1e+2
                 ):
                     max_diff = torch.max(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
                     avg_diff = torch.mean(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
@@ -242,7 +460,7 @@ def _check_correct(ref_src, gen_src, metadata,
                     # debug_print(f"check correct: Error checking output value: {str(e)}")
                 # debug_print(f"check correct: Checked output value")
                 pass_count += 1
-            
+
     except Exception as e:
         try:
             torch.cuda.synchronize(device=device)
@@ -266,7 +484,8 @@ def _check_correct(ref_src, gen_src, metadata,
         gc.collect()
         return False
 
-    metadata["correct"] = f"Passed {pass_count} out of {num_trials} trials: {metadata['correct'] if 'correct' in metadata else 'ALL PASSED'}"
+    metadata[
+        "correct"] = f"Passed {pass_count} out of {num_trials} trials: {metadata['correct'] if 'correct' in metadata else 'ALL PASSED'}"
     if 'diff' in metadata:
         metadata["correct"] += f"\n{metadata['diff']}"
     if 'diff' in metadata:
@@ -711,8 +930,262 @@ def get_profile():
     # TODO: implement
     return None
 
+import re
+from typing import Dict, Any, List
 
-def evaluate(node: Node, get_time=True, get_profile=False, torch_compile=BENCHMARK_TORCH_COMPILE, torch_compile_mode=TORCH_COMPILE_MODE):
+def parse_nsight_text_to_metrics(nsight_text: str) -> Dict[str, Any]:
+    """
+    Parse Nsight Compute CLI text into a structured dict:
+    - 'kernel': name of the kernel (best-effort)
+    - 'config': convenient subset of config metrics
+    - 'sections': full metric tables by section name
+    - 'advice': lists of INF / OPT messages
+    """
+    result: Dict[str, Any] = {
+        "kernel": None,
+        "config": {},
+        "sections": {},
+        "advice": {"INF": [], "OPT": []},
+    }
+    if not nsight_text:
+        return result
+
+    lines = nsight_text.splitlines()
+    n = len(lines)
+    i = 0
+    current_section = None
+
+    # --- Robust kernel name extraction: find "void <name>(" or "void <name><" ---
+    for line in lines:
+        s = line.strip()
+        if s.startswith("void ") and "(" in s:
+            after_void = s[len("void "):]
+            # End at first '(', '<', or whitespace
+            for sep in ("(", "<", " "):
+                j = after_void.find(sep)
+                if j != -1:
+                    after_void = after_void[:j]
+            kernel_name = after_void.strip()
+            if kernel_name:
+                result["kernel"] = kernel_name
+                break
+
+    # --- Main pass: sections + tables + advice ---
+    while i < n:
+        raw_line = lines[i]
+        line = raw_line.strip()
+
+        # Skip empty lines
+        if not line:
+            i += 1
+            continue
+
+        # ---------- Section headers ----------
+        if line.startswith("Section:"):
+            current_section = line[len("Section:"):].strip()
+            result["sections"].setdefault(current_section, {})
+            i += 1
+
+            # Skip header/separator lines for the table
+            while i < n:
+                header_line = lines[i].strip()
+                if (header_line.startswith("-")
+                        or header_line.startswith("Metric Name")):
+                    i += 1
+                    continue
+                break
+
+            # Parse table rows until blank / new section / advice / NVTX/other header
+            while i < n:
+                row_raw = lines[i]
+                row = row_raw.strip()
+                if (not row
+                    or row.startswith("Section:")
+                    or row.startswith("INF")
+                    or row.startswith("OPT")
+                    or row.startswith("NVTX Push/Pop Stack")):
+                    break
+
+                # Example row:
+                # "Achieved Occupancy                        %        31.66"
+                parts = re.split(r"\s{2,}", row)
+                if len(parts) >= 3:
+                    metric_name, unit, value_str = parts[0], parts[1], parts[2]
+                elif len(parts) == 2:
+                    metric_name, unit, value_str = parts[0], "", parts[1]
+                else:
+                    metric_name, unit, value_str = row, "", ""
+
+                # Try to parse numeric; leave as string if not numeric
+                try:
+                    value = float(value_str.replace(",", ""))
+                except ValueError:
+                    value = value_str
+
+                result["sections"][current_section][metric_name] = {
+                    "unit": unit,
+                    "value": value,
+                }
+
+                # Pull out some key config-ish metrics into top-level
+                name_lower = metric_name.lower()
+                if current_section == "Launch Statistics":
+                    if name_lower.startswith("block size"):
+                        result["config"]["block_size"] = value
+                    elif name_lower.startswith("grid size"):
+                        result["config"]["grid_size"] = value
+                    elif name_lower.startswith("registers per thread"):
+                        result["config"]["registers_per_thread"] = value
+                    elif name_lower.startswith("static shared memory per block"):
+                        result["config"]["static_smem_kb"] = value
+                    elif name_lower.startswith("dynamic shared memory per block"):
+                        result["config"]["dynamic_smem_bytes"] = value
+
+                if current_section == "Occupancy":
+                    if name_lower.startswith("theoretical occupancy"):
+                        result["config"]["theoretical_occupancy_pct"] = value
+                    elif name_lower.startswith("achieved occupancy"):
+                        result["config"]["achieved_occupancy_pct"] = value
+
+                i += 1
+
+            # We broke out of the table loop; continue outer loop without extra i++
+            continue
+
+        # ---------- Advice lines (INF/OPT), with indentation ----------
+        if line.startswith("INF") or line.startswith("OPT"):
+            key = "INF" if line.startswith("INF") else "OPT"
+            # Remove the tag + spaces ("INF   " / "OPT   ")
+            # Find first double space after tag to be robust
+            msg = line[3:].lstrip()
+            msg_lines: List[str] = [msg]
+            i += 1
+            # Continuation lines are usually heavily indented
+            while i < n and lines[i].startswith(" " * 10):
+                msg_lines.append(lines[i].strip())
+                i += 1
+            result["advice"][key].append(" ".join(msg_lines))
+            continue
+
+        i += 1
+
+    return result
+
+
+def _load_profiler_script(
+    profiler_script_path: str,
+    ref_src: str,
+    gen_src: str,
+    build_directory: str,
+    device_index: int,
+    seed_num: int = 42,
+    num_warmups: int = 5,
+    num_iters: int = 100,
+):
+    """
+    Generate profiler.py by reading cutgen/profiler_template.py and replacing placeholders.
+    """
+
+    template_path = os.path.join(
+        os.path.dirname(__file__),   # directory of current file
+        "../scripts/profiler_template.py"       # template file
+    )
+
+    with open(template_path, "r", encoding="utf-8") as f:
+        template = f.read()
+
+    # Replace placeholders safely
+    script = (
+        template
+        .replace("__BUILD_DIR__", build_directory)
+        .replace("__DEVICE_INDEX__", str(device_index))
+        .replace("__SEED__", str(seed_num))
+        .replace("__NUM_WARMUPS__", str(num_warmups))
+        .replace("__NUM_ITERS__", str(num_iters))
+        .replace("__REF_SRC__", ref_src.replace('"""', '\\"\\"\\"'))
+        .replace("__GEN_SRC__", gen_src.replace('"""', '\\"\\"\\"'))
+    )
+
+    with open(profiler_script_path, "w", encoding="utf-8") as f:
+        f.write(script)
+
+def run_nsight_profile(
+    ref_src,
+    gen_src,
+    metadata,
+    build_directory=None,
+    device=None,
+    num_warmups: int = 40,
+    num_iters: int = 1,
+    seed_num: int = 42,
+):
+    if NSIGHT_COMPUTE_BIN is None or not os.path.exists(NSIGHT_COMPUTE_BIN):
+        metadata["profile_error"] = f"Nsight Compute not found: {NSIGHT_COMPUTE_BIN}"
+        return None
+
+    # resolve device index
+    if isinstance(device, torch.device):
+        device_index = device.index
+    else:
+        device_index = int(str(device or 0))
+
+    if build_directory is None:
+        build_directory = tempfile.mkdtemp(prefix="ncu_build_")
+
+    tmp_dir = tempfile.mkdtemp(prefix="ncu_prof_", dir=build_directory)
+    profiler_script = os.path.join(tmp_dir, "profiler.py")
+
+    # Write profiler.py from template
+    _load_profiler_script(
+        profiler_script_path=profiler_script,
+        ref_src=ref_src,
+        gen_src=gen_src,
+        build_directory=build_directory,
+        device_index=device_index,
+        seed_num=seed_num,
+        num_warmups=num_warmups,
+        num_iters=num_iters,
+    )
+
+    cmd = [
+        NSIGHT_COMPUTE_BIN,
+        "--set", "basic",
+        "--target-processes", "all",
+        "--nvtx",                    # enable NVTX awareness
+        "--nvtx-include", "CUTGEN_PROFILE_ITER/",
+        sys.executable,
+        profiler_script,
+    ]
+
+    env = os.environ.copy()
+    venv_bin = os.path.dirname(sys.executable)
+    env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
+
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    metadata["profile_cmd"] = " ".join(cmd)
+    metadata["profile_stdout"] = proc.stdout
+    metadata["profile_stderr"] = proc.stderr
+    if proc.returncode == 0:
+        metrics = parse_nsight_text_to_metrics(proc.stdout)
+        metadata["nsight_metrics"] = metrics
+
+    metadata["profile_returncode"] = proc.returncode
+    safe_rmtree(tmp_dir)
+
+    if proc.returncode != 0:
+        metadata["profile_error"] = f"Nsight Compute exited {proc.returncode}"
+        return None
+    print(metadata["profile_stdout"])
+    return {"returncode": proc.returncode}
+
+def evaluate(node: Node, get_time=True, get_profile=USE_PROFILING, torch_compile=BENCHMARK_TORCH_COMPILE, torch_compile_mode=TORCH_COMPILE_MODE):
     """
     This function evaluates the node.
     """
@@ -742,6 +1215,7 @@ def evaluate(node: Node, get_time=True, get_profile=False, torch_compile=BENCHMA
     while (CPU_used > CPU_REQ_SPACE):
         debug_print(f"sleeping for VRAM usage, {CPU_used} on CPU")
         time.sleep(random.randint(1,20) * RUN_MODEL_BACKOFF_TIME)
+        CPU_used = psutil.virtual_memory().percent
 
     if not flag_compile:
         debug_print(f"Node {node.uuid} compile error: {node.metadata['compile']}. Metadata: {node.metadata}")
@@ -778,9 +1252,17 @@ def evaluate(node: Node, get_time=True, get_profile=False, torch_compile=BENCHMA
     if get_profile:
         gpu_lock_fd, device = acquire_gpu()
         device = torch.device(f"cuda:{device}")
-        perf_stats = get_profile(node.ref, node.src, node.metadata, build_directory=build_directory, device=device)
+        perf_stats = run_nsight_profile(
+            node.ref,
+            node.src,
+            node.metadata,
+            build_directory=build_directory,
+            device=device,
+        )
+
         release_gpu(device, gpu_lock_fd)
         node.perf = perf_stats
+        debug_print(f"Node {node.uuid} profile: {perf_stats}")
 
     remove_build_directory(build_directory)
 
