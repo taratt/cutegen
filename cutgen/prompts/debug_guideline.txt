@@ -1,0 +1,186 @@
+                     CuTe CODING & DEBUGGING GUIDE
+===============================================================================
+
+## NON-NEGOTIABLE RULE (READ FIRST)
+
+**DO NOT change the intent of the code by making the CUDA/CuTe code simpler or by using less CUDA/CuTe.**
+- Do **not** “fix” bugs by replacing CuTe tiling/partitioning/TiledMMA/pipeline with a naive CUDA kernel.
+- Preferably do **not** remove async copies, TMA/cp.async, swizzles, tensor layouts, or CuTe abstractions just to pass correctness.
+- Do **not** fall back to cuBLAS / CUTLASS device::Gemm unless the original intent *already was* to call it.
+- Your job is to make the *same algorithm and same CuTe structure* correct: repair layouts, strides, partitions, synchronization, predication, and integration wiring—**without de-CuTe-ing the kernel**.
+- Do **not** change the input sizes (input tensor sizes) given in the original model.
+
+This is a correctness guide, not a “simplify to green tests” guide.
+
+===============================================================================
+
+## TABLE OF CONTENTS
+
+PART 0: LLM OPERATING PROCEDURE (How to debug without changing intent)
+PART 1: CORE CONCEPTS (Layouts, Shapes/Strides, Tensors, Tiles)
+PART 2: “HELLO GEMM / HELLO KERNEL” IN CuTe (Minimal structure you must preserve)
+PART 3: CORRECTNESS DEBUGGING CHECKLIST (Silent bugs & fixes)
+PART 4: ASYNC COPY & SYNC (cp.async / TMA / barriers / pipeline gotchas)
+PART 5: MMA / TiledMMA PITFALLS (Atom selection, partitioning, layouts)
+PART 6: MEMORY & OOM PITFALLS (Especially from redundant contiguous conversions)
+
+===============================================================================
+PART 0: LLM OPERATING PROCEDURE
+===============================
+
+When you are given incorrect CUDA/CuTe code, follow this strict workflow:
+
+1) **Freeze intent**
+   * Write down (explicitly, in the response) what the code is trying to compute:
+     - inputs/outputs
+     - mathematical operation (e.g., GEMM, convolution-like, reduction, attention block, stencil, etc.)
+     - invariants that must remain true (tiling strategy, pipeline stages, shared-memory staging, etc.)
+   * Confirm what you will NOT change (see Non-Negotiable Rule above).
+
+2) **Localize the bug without de-optimizing**
+   * You may add:
+     - debug prints (guarded)
+     - assertions
+     - extra verification kernels
+     - temporary checksums / spot-check loads
+     - temporary extra sync for diagnosis (then remove once fixed)
+   * You may NOT replace the CuTe structure with a simpler kernel “just for debugging.”
+
+3) **Fix in the smallest possible CuTe-native way**
+   * Typical correct fixes:
+     - wrong `Layout` (shape/stride mismatch)
+     - wrong tile view (`local_tile`, `tile`, `partition_*`) producing permuted coordinates
+     - missing predicate for edge tiles
+     - missing barrier/wait for async copy stages
+     - wrong smem layout for the chosen MMA atom
+     - wrong accumulator type / epilogue cast timing
+   * Avoid “global refactors.” Make one change, re-test.
+
+4) **Prove the fix**
+   * Provide:
+     - a short statement of what was wrong
+     - what changed
+     - why it preserves intent
+     - how it was validated (small cases + at least one edge case)
+
+===============================================================================
+PART 1: CORE CONCEPTS
+=====================
+
+1) **Layout = (Shape, Stride) and it is the truth**
+   * In CuTe, `Layout` directly defines address mapping. If output is “plausible but wrong,” assume layout/stride is wrong until proven otherwise.
+
+2) **Tensor = pointer + Layout**
+   * A CuTe `Tensor` is a view. “Correct launch” does not imply “correct indexing.”
+
+3) **Tiling/partitioning are coordinate transforms**
+   * `local_tile`, `partition_*`, etc. do not copy—they remap indices. Debug them like math.
+
+===============================================================================
+PART 2: “HELLO GEMM / HELLO KERNEL” IN CuTe (STRUCTURE TO PRESERVE)
+===================================================================
+
+A correct CuTe kernel typically has these layers; **do not delete these layers**:
+
+A) **Global tensors (gmem)**
+B) **CTA tiling (block-level shapes)**
+C) **Smem staging + Copy (sync or async)**
+D) **Compute (MMA or per-thread math)**
+E) **Epilogue / store (with correct predicates)**
+
+For non-matmul kernels, the same structure still applies: you still have gmem views, tiles, smem staging, and compute that must be consistent.
+
+===============================================================================
+PART 3: CORRECTNESS DEBUGGING CHECKLIST
+=======================================
+
+Fix in this order:
+
+A) **Shape/Layout/Stride sanity**
+1. Confirm each tensor’s real stride (from how data is produced).
+2. Confirm each CuTe view preserves the intended coordinates.
+3. Spot-check a few coordinates → physical addresses → expected values.
+4. Before proposing fixes, check whether the kernel assumes contiguous linear indexing (e.g., X[i], reinterpret_cast<float4*>) and whether the wrapper forces .contiguous() or changes device; if inputs may be non-contiguous, either (A) require contiguous inputs explicitly (TORCH_CHECK + contiguity gate + scalar tail) to match the reference behavior used in this harness, or (B) implement a correct strided fallback (sizes/strides + offset computation) while keeping the optimized contiguous fast path.
+
+B) **Copy path correctness**
+4. Validate copy-only loop (gmem→smem→gmem) before looking at compute.
+5. If async is used, ensure required waits/barriers exist before first use.
+
+C) **Compute correctness**
+6. Validate partition shapes match expectations (especially K mapping for MMA).
+7. Verify accumulator dtype and any casting happens late enough.
+
+D) **Edges**
+8. Predication for partial tiles (M/N/K remainders) must be correct.
+9. Ensure stores are masked correctly (no out-of-bounds writes).
+High-frequency LLM failure modes (check before anything else):
+1) Do NOT worry or check for device mismatches. Our setup is ALWAYS single-gpu.
+2) Do NOT assume contiguous/stride/alignment unless you guard it (TORCH_CHECK or gated fast path + correct fallback).
+3) If using float4/vec fast path: gate by alignment + stride==1, and correctly handle M not divisible by 4.
+4) Do NOT add “fake CuTe” no-ops (unused make_shape/make_stride). If CuTe is kept, it must be used for indexing (cute::Tensor / layouts), otherwise remove it.
+5) Do not use cuBLAS, do not change precision, do not add PyTorch ops in forward() (must be a single extension call).
+===============================================================================
+PART 4: ASYNC COPY & SYNC
+=========================
+
+**Async correctness rules (do these before performance tuning):**
+- If you introduce `cp.async` / pipelined stages, every stage must have:
+  - a clear “produce” point (copy issued)
+  - a clear “consume” point (copy completed + visible)
+  - correct barrier/wait placement
+- Symptom mapping:
+  - stale/previous-tile values → missing wait/barrier
+  - fails only when stages > 1 → stage index math or barrier placement bug
+- For debugging you may temporarily serialize:
+  - stages = 1
+  - copy then compute
+  - extra sync
+  Then restore original pipeline once fixed.
+
+===============================================================================
+PART 5: MMA / TiledMMA PITFALLS
+===============================
+
+- Atom selection must match arch + dtype.
+- Smem layout must match what the MMA path expects (or you must transform).
+- Partitioning must align A/B fragments so K is consistent.
+- Debug rule: prove A/B fragments contain the intended values *before* blaming MMA.
+### 4) CuTe GEMM static-assert failures: debug partition *semantics*, not just types
+If compilation fails inside `cute/algorithm/gemm.hpp` with `static_assert` errors involving checks like `size<1>(A) == size<1>(B)`, `size<0>(B) == size<1>(C)`, `size<1>(B) == size<2>(C)`, or similar, treat this as a **fragment-shape mismatch caused by incorrect tiling/partition mapping**. In practice, this usually means one of the `local_tile(...)`, `local_partition(...)`, `Step<...>`, or thread-fragment layouts is assigning the wrong logical role to a dimension. For GEMM, explicitly verify that the fragments presented to `gemm(...)` obey the contract `A = (M_tile, K_tile)`, `B = (K_tile, N_tile)`, and `C/Acc = (M_tile, N_tile)`. Do **not** just tweak types blindly. Instead, inspect whether (1) CTA tiling mapped B through the wrong tiler axis, (2) the shared→compute partition for B accidentally broadcasts or collapses K/N, or (3) the compute micro-tile layout (`tC`, accumulator fragment, or MMA fragment shape) is inconsistent with what CuTe infers. When fixing this class of bug, prefer the smallest structural correction: repair the `Step<...>` mapping, repair the partition direction, or make the compute micro-tile match the implied GEMM fragment shape. After the fix, explicitly state the resulting fragment shapes, e.g. `tCsA = (16,8)`, `tCsB = (8,16)`, `tCrC = (16,16)`, and confirm that they satisfy the GEMM contract before recompiling.
+===============================================================================
+PART 6: MEMORY & OOM PITFALLS (IMPORTANT FOR LLMs)
+=================================================
+
+### 1) The “redundant contiguous() causes OOM” failure mode
+
+Sometimes correctness-check harnesses (especially for non-matmul kernels) accidentally trigger **multiple redundant contiguous conversions** and/or large temporary buffers—causing a crash like:
+
+> Runtime error when checking correctness: **CUDA out of memory. Tried to allocate 6.00 GiB. GPU 0 has a total capacity of 23.49 GiB of which 3.76 GiB is free. Process 392481 has 12.44 GiB memory in use. Including non-PyTorch memory, this process has 6.38 GiB memory in use**
+
+**Guideline for the LLM: treat OOM during correctness-check as a bug in the *test/integration path*, not necessarily in the kernel math.**
+Common causes:
+- Calling `.contiguous()` on large tensors multiple times in a single check.
+- Creating “reference” outputs in multiple dtypes (fp32 + fp16) simultaneously.
+- Materializing giant intermediate tensors (e.g., expanded/broadcasted views) instead of using views.
+- Copying tensors to GPU repeatedly inside loops (per-test-case allocation churn).
+
+### 2) Fix OOM WITHOUT changing kernel intent
+You may do any of the following (these preserve intent):
+- **Cache contiguous buffers**: if you truly need contiguous, do it once and reuse.
+- **Avoid duplicate references**: compute reference in-place when possible; free temporaries between runs.
+- **Use views instead of materialization**: avoid `.repeat`, `.expand` followed by implicit materialization.
+- **Reduce correctness batch size**: validate on smaller sizes first, then scale.
+- **Explicitly delete temporaries + synchronize** in the harness between checks when needed.
+
+You must NOT “fix OOM” by rewriting the CuTe kernel into a simpler kernel. The kernel is not the place to “contiguous away” integration problems.
+
+### 3) A quick diagnostic checklist for this exact error
+- Does the harness call `.contiguous()` more than once per input?
+- Is there an accidental `.clone()` or `.to(device)` repeated inside a loop?
+- Are there multiple large outputs kept alive (not freed) across tests?
+- Is the reference path expanding tensors (broadcast) into a full dense materialization?
+
+===============================================================================
+
+END
+===
