@@ -46,8 +46,8 @@ def process_directory(subdir_path, plots_dir):
     plt.bar(depths, ratios, color=colors, edgecolor="black")
 
     plt.xlabel("Depth")
-    plt.ylabel("Performance Ratio (ref_time.mean / time.mean)")
-    plt.title(f"Performance Ratio vs Depth\n{subdir_path}")
+    plt.ylabel("Speedup (reference time/ generated kernel time)")
+    plt.title(f"Speedup vs Depth")
     plt.grid(axis="y", linestyle="--", alpha=0.6)
 
     # Make sure x-axis shows only the depths we have
@@ -55,7 +55,7 @@ def process_directory(subdir_path, plots_dir):
     # Save
     os.makedirs(plots_dir, exist_ok=True)
     base_name = os.path.basename(subdir_path.rstrip("/"))
-    out_path = os.path.join(plots_dir, f"{base_name}.png")
+    out_path = os.path.join(plots_dir, "1"+f"{base_name}.png")
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved plot: {out_path}")
@@ -69,5 +69,5 @@ def process_all(main_dir, plots_dir="plots"):
 
 
 if __name__ == "__main__":
-    main_dir = "/home/tarasaba/PycharmProjects/cutgen/saved_nodes/cute/attempt_15"  # your root dir
-    process_all(main_dir, plots_dir="../plots_att15")
+    main_dir = "/home/tarasaba/PycharmProjects/cutgen/saved_nodes/cute/attempt_23"  # your root dir
+    process_all(main_dir, plots_dir="../plots_att23")

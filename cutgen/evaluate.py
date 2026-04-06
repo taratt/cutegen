@@ -353,15 +353,16 @@ def _check_correct(ref_src, gen_src, metadata,
     torch.cuda.set_device(device)
     metadata["hardware"] = torch.cuda.get_device_name(device=device)
     metadata["device"] = str(device)
-    context = {}
+    ref_context = {}
+    gen_context = {}
     os.environ["TORCH_USE_CUDA_DSA"] = "1"
     os.environ[
         "CUDA_LAUNCH_BLOCKING"] = "0"  # Force synchronous execution for better error capture; TODO: don't block CUDA calls for better performance for now
 
     # We already know the generated code compiles, so we can load the model
-    Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(ref_src, context, metadata)
+    Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(ref_src, ref_context, metadata)
     # debug_print(f"check correct: Loaded original model")
-    ModelNew = load_custom_model(gen_src, context, metadata, build_directory)
+    ModelNew = load_custom_model(gen_src, gen_context, metadata, build_directory)
     # debug_print(f"check correct: Loaded custom model")
 
     try:
@@ -399,6 +400,12 @@ def _check_correct(ref_src, gen_src, metadata,
             for trial in range(num_trials):
                 # print(f"Checking correctness for trial {trial}")
                 trial_seed = correctness_trial_seeds[trial]
+                # 👇 ADD THIS DEBUG PRINT HERE
+                debug_print(
+                    "REF globals batch_size/dim currently:"  +
+                    str(get_inputs_fn.__globals__.get("batch_size"))+
+                    str(get_inputs_fn.__globals__.get("dim"))
+                )
 
                 set_seed(trial_seed)
                 inputs = get_inputs_fn()
@@ -407,6 +414,9 @@ def _check_correct(ref_src, gen_src, metadata,
                     for x in inputs
                 ]
                 # # debug_print(f"check correct: Initialized inputs")
+                for i, inp in enumerate(inputs):
+                    if isinstance(inp, torch.Tensor):
+                        debug_print(f"INPUT[{i}] shape={inp.shape}, device={inp.device}, dtype={inp.dtype}")
 
                 set_seed(trial_seed)
                 model_new = custom_model.cuda(device=device)
@@ -463,6 +473,7 @@ def _check_correct(ref_src, gen_src, metadata,
 
     except Exception as e:
         try:
+            metadata["correct"] = f"Unexpected error during correctness check: {repr(e)}"
             torch.cuda.synchronize(device=device)
         except Exception as e2:
             metadata["correct"] = f"Runtime error when checking correctness: {str(e)}; {str(e2)}"
@@ -505,12 +516,13 @@ def _get_wallclock_time(ref_src, gen_src, metadata,
     torch.cuda.set_device(device)
     metadata["hardware"] = torch.cuda.get_device_name(device=device)
     metadata["device"] = str(device)
-    context = {}
+    ref_context = {}
+    gen_context = {}
     os.environ["CUDA_LAUNCH_BLOCKING"] = "0" # don't block CUDA calls for better performance
     
      # We already know the generated code compiles and is correct, so we can skip lots of checks
-    Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(ref_src, context, metadata)
-    ModelNew = load_custom_model(gen_src, context, metadata, build_directory)
+    Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(ref_src, ref_context, metadata)
+    ModelNew = load_custom_model(gen_src, gen_context, metadata, build_directory)
 
     set_seed(seed_num)
     init_inputs = get_init_inputs_fn()
@@ -708,12 +720,13 @@ def _get_wallclock_time_2(ref_src, gen_src, metadata,
     torch.cuda.set_device(device)
     metadata["hardware"] = torch.cuda.get_device_name(device=device)
     metadata["device"] = str(device)
-    context = {}
+    ref_context = {}
+    gen_context = {}
     os.environ["CUDA_LAUNCH_BLOCKING"] = "0" # don't block CUDA calls for better performance
     
      # We already know the generated code compiles and is correct, so we can skip lots of checks
-    Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(ref_src, context, metadata)
-    ModelNew = load_custom_model(gen_src, context, metadata, build_directory)
+    Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(ref_src, ref_context, metadata)
+    ModelNew = load_custom_model(gen_src, gen_context, metadata, build_directory)
 
     set_seed(seed_num)
     init_inputs = get_init_inputs_fn()

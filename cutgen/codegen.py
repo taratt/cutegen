@@ -1,4 +1,4 @@
-from cutgen.config import LLM_CONFIG_CODEGEN, SKXOSS_BASE_PATH, INITIAL_PROMPT_FILE, OPTIMIZE_PROMPT_FILE, EDIT_PROMPT_FILE, FEEDBACK_MODE, TUNE_PROMPT_FILE, USE_PROFILING
+from cutgen.config import LLM_CONFIG_CODEGEN, SKXOSS_BASE_PATH, INITIAL_PROMPT_FILE, OPTIMIZE_PROMPT_FILE, EDIT_PROMPT_FILE, FEEDBACK_MODE, TUNE_PROMPT_FILE, USE_PROFILING, PROFILING_START_DEPTH
 from cutgen.llm_api import create_llm_server_from_config
 from cutgen.util import parse_code_and_edit, read_file, debug_print
 from cutgen.node import Node
@@ -116,7 +116,7 @@ def codegen_edits(node: Node, addendum=""):
     with open(EDIT_PROMPT_FILE, "r") as file:
         edit_prompt = file.read()
     prompt = edit_prompt.replace("<NODE_PRV_SRC>", get_numbered_lines(src_lines))
-    if USE_PROFILING and node.depth > 3:
+    if USE_PROFILING and node.depth > PROFILING_START_DEPTH:
         prompt += "Here are some profiling data that you should use to decide how to optimize the code:\n"
         prompt += build_nsight_addendum_for_node(node)
     prompt += read_file(SKXOSS_BASE_PATH + "/cutgen/prompts/code_editor_prompt.md")

@@ -30,11 +30,12 @@ CODEGEN_OPTIMIZE_MODE = "edits" # mode to optimize the code, options: original, 
 MAX_CONCURRENT_PROCESSES = 10 # maximum number of concurrent processes for node execution
 EVAL_RUN_TIMEOUT = 300.0 # maximum time to wait for a child process to finish run_in_subprocess
 MAX_CONCURRENT_PROBLEMS = 1 # maximum number of problems to run concurrently on the coordinator
-MAX_DEPTH = 15 # maximum depth of the search
+MAX_DEPTH = 8 # maximum depth of the search
 MAX_RETRIES_PER_DEPTH = 0
 
 FEEDBACK_MODE = "iterative"
 USE_PROFILING = True
+PROFILING_START_DEPTH = 2
 NSIGHT_COMPUTE_BIN = os.environ.get("NSIGHT_COMPUTE_BIN", "/usr/local/cuda/bin/ncu")
 NSIGHT_COMPUTE_SET = "basic"
 BENCHMARK_TORCH_COMPILE = False # whether to benchmark the torch compile

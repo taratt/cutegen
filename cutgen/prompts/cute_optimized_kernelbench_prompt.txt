@@ -33,6 +33,7 @@ Pick ONE of the following effective optimizations (only one):
 Rules for GEMM:
 - Pay close attention to matrix operand dimensions (M, N, K) and layouts/strides and how they compare to each other to deliver specific optimizations.
 - Pick the strongest optimization that matches the shapes.
+- There might be information about the matrices in comments or the reference code (such as if a matrix is symmetric etc) you can optimize only for those cases to make kernels fast but DO NOT make assumptions yourself without having provable and explicit information in the reference.
 - Do NOT change precision.
 - Do NOT use cuBLAS/cuDNN or other pre-optimized libraries.
 - Do NOT fall back to PyTorch operators for any case.

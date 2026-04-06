@@ -23,11 +23,11 @@ Generate some useful suggestions for fixing the compile error; here's an doc tha
 
 def get_correctness_suggestions(node: Node):
     llm_server = create_llm_server_from_config(random.choice(LLM_CONFIG_CODEGEN))
-    prompt = f"""The following code is not correct:
+    prompt = f"""The following code is not correct (either not producing correct results or having a runtime error):
 ```
 {node.src}
 ```
-The error is:
+The error is (if the error is empty it means it is not generating correct outputs):
 {node.metadata['correct'][0:min(len(node.metadata['correct']), COMPILE_LOG_CHARS)]}
 Generate some useful suggestions for fixing the correctness error; here's a doc that might have useful information:
 {read_file(SKXOSS_BASE_PATH + "/cutgen/prompts/debug_guideline.txt")}
@@ -65,10 +65,10 @@ def _fix_compile_edits(node: Node, addendum="", retrieve=False):
     else:
         suggestions = ""
     src_lines = src_to_lines(str(node.src))
-    
+
     prompt_content = read_file(SKXOSS_BASE_PATH + "/cutgen/prompts/code_editor_prompt.md")
     output_instruction = "Output your reasoning for the edits in <reasoning></reasoning> tags. Output the edits in a codeblock ```json and ```."
-    
+
     prompt = f"""The following code is not compiling:
 ```
 {get_numbered_lines(src_lines)}
@@ -108,7 +108,7 @@ def _fix_correct_edits(node: Node, addendum="", retrieve=False):
     src_lines = src_to_lines(str(node.src))
     prompt_content = read_file(SKXOSS_BASE_PATH + "/cutgen/prompts/code_editor_prompt.md")
     output_instruction = "Output your reasoning for the edits in <reasoning></reasoning> tags. Output the edits in a codeblock ```json and ```."
-    
+
     prompt = f"""The following code is not correct:
 ```
 {get_numbered_lines(src_lines)}
