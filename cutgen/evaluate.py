@@ -344,51 +344,236 @@ def override_get_inputs_cpu(context: dict):
 #     else:
 #         return False
 
+# def _check_correct(ref_src, gen_src, metadata,
+#                    num_trials=10, seed_num=42,
+#                    build_directory=None, device=None):
+#     """
+#     This function checks if the generated source code is correct.
+#     """
+#     torch.cuda.set_device(device)
+#     metadata["hardware"] = torch.cuda.get_device_name(device=device)
+#     metadata["device"] = str(device)
+#     ref_context = {}
+#     gen_context = {}
+#     os.environ["TORCH_USE_CUDA_DSA"] = "1"
+#     os.environ[
+#         "CUDA_LAUNCH_BLOCKING"] = "0"  # Force synchronous execution for better error capture; TODO: don't block CUDA calls for better performance for now
+#
+#     # We already know the generated code compiles, so we can load the model
+#     Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(ref_src, ref_context, metadata)
+#     # debug_print(f"check correct: Loaded original model")
+#     ModelNew = load_custom_model(gen_src, gen_context, metadata, build_directory)
+#     # debug_print(f"check correct: Loaded custom model")
+#
+#     try:
+#         set_seed(seed_num)
+#         init_inputs = get_init_inputs_fn()
+#         init_inputs = [
+#             x.cuda(device=metadata["device"]) if isinstance(x, torch.Tensor) else x for x in init_inputs
+#         ]
+#
+#         original_model = None
+#         with torch.no_grad():
+#             set_seed(seed_num)  # set seed for reproducible weights
+#             original_model = Model(*init_inputs)
+#         # debug_print(f"check correct: Initialized original model")
+#
+#         custom_model = None
+#         try:
+#             with torch.no_grad():
+#                 set_seed(seed_num)  # set seed for reproducible weights
+#                 custom_model = ModelNew(*init_inputs)
+#         except Exception as e:
+#             metadata["correct"] = f"Error initializing custom model: {e}"
+#             torch.cuda.empty_cache()
+#             torch.cuda.reset_peak_memory_stats()
+#             gc.collect()
+#             return False
+#
+#         pass_count = 0
+#         torch.manual_seed(seed_num)
+#         correctness_trial_seeds = [
+#             torch.randint(0, 2 ** 32 - 1, (1,)).item() for _ in range(num_trials)
+#         ]
+#
+#         with torch.no_grad():
+#             for trial in range(num_trials):
+#                 # print(f"Checking correctness for trial {trial}")
+#                 trial_seed = correctness_trial_seeds[trial]
+#                 # 👇 ADD THIS DEBUG PRINT HERE
+#                 debug_print(
+#                     "REF globals batch_size/dim currently:"  +
+#                     str(get_inputs_fn.__globals__.get("batch_size"))+
+#                     str(get_inputs_fn.__globals__.get("dim"))
+#                 )
+#
+#                 set_seed(trial_seed)
+#                 inputs = get_inputs_fn()
+#                 inputs = [
+#                     x.cuda(device=device) if isinstance(x, torch.Tensor) else x
+#                     for x in inputs
+#                 ]
+#                 # # debug_print(f"check correct: Initialized inputs")
+#                 for i, inp in enumerate(inputs):
+#                     if isinstance(inp, torch.Tensor):
+#                         debug_print(f"INPUT[{i}] shape={inp.shape}, device={inp.device}, dtype={inp.dtype}")
+#
+#                 set_seed(trial_seed)
+#                 model_new = custom_model.cuda(device=device)
+#                 # debug_print(f"check correct: Moved custom model to device")
+#
+#                 set_seed(trial_seed)
+#                 model = original_model.cuda(device=device)
+#                 # debug_print(f"check correct: Moved original model to device")
+#
+#                 try:
+#                     output_new = model_new(*inputs)
+#                     torch.cuda.synchronize(device=device)
+#                     # debug_print(f"check correct: Synchronized custom model")
+#                 except Exception as e:
+#                     metadata["correct"] = f"Runtime error when checking correctness: {str(e)}"
+#                     torch.cuda.empty_cache()
+#                     torch.cuda.reset_peak_memory_stats()
+#                     gc.collect()
+#                     return False
+#
+#                 output = model(*inputs)
+#                 # debug_print(f"check correct: Computed output for original model")
+#                 try:
+#                     torch.cuda.synchronize(device=device)
+#                     # debug_print(f"check correct: Synchronized original model")
+#                 except Exception as e:
+#                     metadata["correct"] = f"Runtime error when checking correctness: {str(e)}"
+#                     torch.cuda.empty_cache()
+#                     torch.cuda.reset_peak_memory_stats()
+#                     gc.collect()
+#                     return False
+#
+#                 if output.shape != output_new.shape:
+#                     metadata["correct"] = f"Output shape mismatch, expected {output.shape}, got {output_new.shape}"
+#                     continue
+#                 # debug_print(f"check correct: Checked output shape: {output.shape} vs. {output_new.shape}")
+#                 if not torch.allclose(
+#                         # output, output_new, atol=2.5e-02, rtol=2.5e-02
+#                         output.to(torch.float32), output_new.to(torch.float32), atol=1e-02, rtol=1e-02
+#                         # output, output_new, rtol=1e-01, atol=1e+2
+#                 ):
+#                     max_diff = torch.max(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
+#                     avg_diff = torch.mean(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
+#                     metadata["correct"] = f"Output value mismatch, max diff: {max_diff}, avg diff: {avg_diff}"
+#                     continue
+#                 else:
+#                     if trial == num_trials - 1:
+#                         max_diff = torch.max(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
+#                         avg_diff = torch.mean(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
+#                         metadata["diff"] = f"Output value matched, max diff: {max_diff}, avg diff: {avg_diff}"
+#                     # debug_print(f"check correct: Error checking output value: {str(e)}")
+#                 # debug_print(f"check correct: Checked output value")
+#                 pass_count += 1
+#
+#     except Exception as e:
+#         try:
+#             metadata["correct"] = f"Unexpected error during correctness check: {repr(e)}"
+#             torch.cuda.synchronize(device=device)
+#         except Exception as e2:
+#             metadata["correct"] = f"Runtime error when checking correctness: {str(e)}; {str(e2)}"
+#             torch.cuda.empty_cache()
+#             torch.cuda.reset_peak_memory_stats()
+#             gc.collect()
+#             return False
+#         torch.cuda.empty_cache()
+#         torch.cuda.reset_peak_memory_stats()
+#         gc.collect()
+#         return False
+#
+#     try:
+#         torch.cuda.synchronize()
+#     except Exception as e:
+#         metadata["correct"] = f"Runtime error when checking correctness: {str(e)}"
+#         torch.cuda.empty_cache()
+#         torch.cuda.reset_peak_memory_stats()
+#         gc.collect()
+#         return False
+#
+#     metadata[
+#         "correct"] = f"Passed {pass_count} out of {num_trials} trials: {metadata['correct'] if 'correct' in metadata else 'ALL PASSED'}"
+#     if 'diff' in metadata:
+#         metadata["correct"] += f"\n{metadata['diff']}"
+#     if 'diff' in metadata:
+#         del metadata['diff']
+#     if pass_count == num_trials:
+#         return True
+#     else:
+#         return False
+
 def _check_correct(ref_src, gen_src, metadata,
                    num_trials=10, seed_num=42,
                    build_directory=None, device=None):
     """
     This function checks if the generated source code is correct.
+    Functionality is the same as before, but memory usage is much safer:
+    - models are created once
+    - inputs for generated/reference runs are separated
+    - outputs are moved to CPU before comparison
+    - GPU tensors are freed aggressively between steps
     """
     torch.cuda.set_device(device)
     metadata["hardware"] = torch.cuda.get_device_name(device=device)
     metadata["device"] = str(device)
+
     ref_context = {}
     gen_context = {}
+
     os.environ["TORCH_USE_CUDA_DSA"] = "1"
-    os.environ[
-        "CUDA_LAUNCH_BLOCKING"] = "0"  # Force synchronous execution for better error capture; TODO: don't block CUDA calls for better performance for now
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
+
+    def cleanup():
+        try:
+            torch.cuda.synchronize(device=device)
+        except Exception:
+            pass
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        gc.collect()
+
+    def clone_to_device(xs, device):
+        ys = []
+        for x in xs:
+            if isinstance(x, torch.Tensor):
+                ys.append(x.detach().clone().cuda(device=device))
+            else:
+                ys.append(x)
+        return ys
 
     # We already know the generated code compiles, so we can load the model
-    Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(ref_src, ref_context, metadata)
-    # debug_print(f"check correct: Loaded original model")
+    Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(
+        ref_src, ref_context, metadata
+    )
     ModelNew = load_custom_model(gen_src, gen_context, metadata, build_directory)
-    # debug_print(f"check correct: Loaded custom model")
 
     try:
         set_seed(seed_num)
         init_inputs = get_init_inputs_fn()
         init_inputs = [
-            x.cuda(device=metadata["device"]) if isinstance(x, torch.Tensor) else x for x in init_inputs
+            x.cuda(device=metadata["device"]) if isinstance(x, torch.Tensor) else x
+            for x in init_inputs
         ]
 
-        original_model = None
-        with torch.no_grad():
-            set_seed(seed_num)  # set seed for reproducible weights
+        with torch.inference_mode():
+            set_seed(seed_num)
             original_model = Model(*init_inputs)
-        # debug_print(f"check correct: Initialized original model")
+            if isinstance(original_model, nn.Module):
+                original_model = original_model.cuda(device=device)
+                original_model.eval()
 
-        custom_model = None
-        try:
-            with torch.no_grad():
-                set_seed(seed_num)  # set seed for reproducible weights
-                custom_model = ModelNew(*init_inputs)
-        except Exception as e:
-            metadata["correct"] = f"Error initializing custom model: {e}"
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()
-            gc.collect()
-            return False
+            set_seed(seed_num)
+            custom_model = ModelNew(*init_inputs)
+            if isinstance(custom_model, nn.Module):
+                custom_model = custom_model.cuda(device=device)
+                custom_model.eval()
+
+        del init_inputs
+        cleanup()
 
         pass_count = 0
         torch.manual_seed(seed_num)
@@ -396,115 +581,132 @@ def _check_correct(ref_src, gen_src, metadata,
             torch.randint(0, 2 ** 32 - 1, (1,)).item() for _ in range(num_trials)
         ]
 
-        with torch.no_grad():
+        last_diff_msg = None
+
+        with torch.inference_mode():
             for trial in range(num_trials):
-                # print(f"Checking correctness for trial {trial}")
                 trial_seed = correctness_trial_seeds[trial]
-                # 👇 ADD THIS DEBUG PRINT HERE
+
                 debug_print(
-                    "REF globals batch_size/dim currently:"  +
-                    str(get_inputs_fn.__globals__.get("batch_size"))+
-                    str(get_inputs_fn.__globals__.get("dim"))
+                    "REF globals batch_size/dim currently:"
+                    + str(get_inputs_fn.__globals__.get("batch_size"))
+                    + str(get_inputs_fn.__globals__.get("dim"))
                 )
 
+                # Generate inputs once on CPU
                 set_seed(trial_seed)
-                inputs = get_inputs_fn()
-                inputs = [
-                    x.cuda(device=device) if isinstance(x, torch.Tensor) else x
-                    for x in inputs
-                ]
-                # # debug_print(f"check correct: Initialized inputs")
-                for i, inp in enumerate(inputs):
+                inputs_cpu = get_inputs_fn()
+
+                for i, inp in enumerate(inputs_cpu):
                     if isinstance(inp, torch.Tensor):
-                        debug_print(f"INPUT[{i}] shape={inp.shape}, device={inp.device}, dtype={inp.dtype}")
+                        debug_print(
+                            f"INPUT[{i}] shape={inp.shape}, device={inp.device}, dtype={inp.dtype}"
+                        )
 
-                set_seed(trial_seed)
-                model_new = custom_model.cuda(device=device)
-                # debug_print(f"check correct: Moved custom model to device")
-
-                set_seed(trial_seed)
-                model = original_model.cuda(device=device)
-                # debug_print(f"check correct: Moved original model to device")
-
+                # -------- Run generated model first --------
                 try:
-                    output_new = model_new(*inputs)
-                    torch.cuda.synchronize(device=device)
-                    # debug_print(f"check correct: Synchronized custom model")
-                except Exception as e:
-                    metadata["correct"] = f"Runtime error when checking correctness: {str(e)}"
-                    torch.cuda.empty_cache()
-                    torch.cuda.reset_peak_memory_stats()
-                    gc.collect()
+                    set_seed(trial_seed)
+                    inputs_new = clone_to_device(inputs_cpu, device)
+                except torch.cuda.OutOfMemoryError as e:
+                    metadata["correct"] = f"OOM moving generated-model inputs to GPU: {e}"
+                    cleanup()
                     return False
 
-                output = model(*inputs)
-                # debug_print(f"check correct: Computed output for original model")
                 try:
+                    output_new = custom_model(*inputs_new)
                     torch.cuda.synchronize(device=device)
-                    # debug_print(f"check correct: Synchronized original model")
+                    output_new_cpu = output_new.detach().to(torch.float32).cpu()
                 except Exception as e:
-                    metadata["correct"] = f"Runtime error when checking correctness: {str(e)}"
-                    torch.cuda.empty_cache()
-                    torch.cuda.reset_peak_memory_stats()
-                    gc.collect()
+                    metadata["correct"] = f"Runtime error when checking correctness (generated model): {str(e)}"
+                    cleanup()
+                    return False
+                finally:
+                    if "inputs_new" in locals():
+                        del inputs_new
+                    if "output_new" in locals():
+                        del output_new
+                    cleanup()
+
+                # -------- Run reference model second --------
+                try:
+                    set_seed(trial_seed)
+                    inputs_ref = clone_to_device(inputs_cpu, device)
+                except torch.cuda.OutOfMemoryError as e:
+                    metadata["correct"] = f"OOM moving reference-model inputs to GPU: {e}"
+                    cleanup()
                     return False
 
-                if output.shape != output_new.shape:
-                    metadata["correct"] = f"Output shape mismatch, expected {output.shape}, got {output_new.shape}"
+                try:
+                    output = original_model(*inputs_ref)
+                    torch.cuda.synchronize(device=device)
+                    output_cpu = output.detach().to(torch.float32).cpu()
+                except Exception as e:
+                    metadata["correct"] = f"Runtime error when checking correctness (reference model): {str(e)}"
+                    cleanup()
+                    return False
+                finally:
+                    if "inputs_ref" in locals():
+                        del inputs_ref
+                    if "output" in locals():
+                        del output
+                    cleanup()
+
+                # -------- Compare on CPU --------
+                if output_cpu.shape != output_new_cpu.shape:
+                    metadata["correct"] = (
+                        f"Output shape mismatch, expected {output_cpu.shape}, got {output_new_cpu.shape}"
+                    )
+                    del output_cpu, output_new_cpu, inputs_cpu
+                    cleanup()
                     continue
-                # debug_print(f"check correct: Checked output shape: {output.shape} vs. {output_new.shape}")
+
                 if not torch.allclose(
-                        # output, output_new, atol=2.5e-02, rtol=2.5e-02
-                        output.to(torch.float32), output_new.to(torch.float32), atol=1e-02, rtol=1e-02
-                        # output, output_new, rtol=1e-01, atol=1e+2
+                    output_cpu, output_new_cpu, atol=1e-02, rtol=1e-02
                 ):
-                    max_diff = torch.max(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
-                    avg_diff = torch.mean(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
-                    metadata["correct"] = f"Output value mismatch, max diff: {max_diff}, avg diff: {avg_diff}"
+                    diff = torch.abs(output_cpu - output_new_cpu)
+                    max_diff = diff.max().item()
+                    avg_diff = diff.mean().item()
+                    metadata["correct"] = (
+                        f"Output value mismatch, max diff: {max_diff}, avg diff: {avg_diff}"
+                    )
+                    del diff, output_cpu, output_new_cpu, inputs_cpu
+                    cleanup()
                     continue
                 else:
                     if trial == num_trials - 1:
-                        max_diff = torch.max(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
-                        avg_diff = torch.mean(torch.abs(output.to(torch.float32) - output_new.to(torch.float32))).item()
-                        metadata["diff"] = f"Output value matched, max diff: {max_diff}, avg diff: {avg_diff}"
-                    # debug_print(f"check correct: Error checking output value: {str(e)}")
-                # debug_print(f"check correct: Checked output value")
+                        diff = torch.abs(output_cpu - output_new_cpu)
+                        max_diff = diff.max().item()
+                        avg_diff = diff.mean().item()
+                        last_diff_msg = (
+                            f"Output value matched, max diff: {max_diff}, avg diff: {avg_diff}"
+                        )
+                        del diff
+
+                del output_cpu, output_new_cpu, inputs_cpu
+                cleanup()
                 pass_count += 1
 
     except Exception as e:
-        try:
-            metadata["correct"] = f"Unexpected error during correctness check: {repr(e)}"
-            torch.cuda.synchronize(device=device)
-        except Exception as e2:
-            metadata["correct"] = f"Runtime error when checking correctness: {str(e)}; {str(e2)}"
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()
-            gc.collect()
-            return False
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        gc.collect()
+        metadata["correct"] = f"Unexpected error during correctness check: {repr(e)}"
+        cleanup()
         return False
 
     try:
-        torch.cuda.synchronize()
+        torch.cuda.synchronize(device=device)
     except Exception as e:
         metadata["correct"] = f"Runtime error when checking correctness: {str(e)}"
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        gc.collect()
+        cleanup()
         return False
 
-    metadata[
-        "correct"] = f"Passed {pass_count} out of {num_trials} trials: {metadata['correct'] if 'correct' in metadata else 'ALL PASSED'}"
-    if 'diff' in metadata:
-        metadata["correct"] += f"\n{metadata['diff']}"
-    if 'diff' in metadata:
-        del metadata['diff']
-    if pass_count == num_trials:
-        return True
-    else:
-        return False
+    metadata["correct"] = (
+        f"Passed {pass_count} out of {num_trials} trials: "
+        f"{metadata['correct'] if 'correct' in metadata and metadata['correct'] else 'ALL PASSED'}"
+    )
+    if last_diff_msg is not None:
+        metadata["correct"] += f"\n{last_diff_msg}"
+
+    cleanup()
+    return pass_count == num_trials
 
 def _get_wallclock_time(ref_src, gen_src, metadata,
                             num_warmups=5, num_trials=100, seed_num=42,
