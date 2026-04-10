@@ -21,7 +21,7 @@ def _run_node_worker(node_data, code_optimize_addendum="", codegen_initial_adden
             node.metadata["last_passed_src"] = node.src
             node.metadata["last_passed_depth"] = node.depth
             next_node = Node(ref=node.ref, src="", prev_src=node.src, ref_time=node.ref_time, save_folder_path=node.save_folder_path, depth=node.depth + 1)
-            next_node.metadata["prev_nsight_metrics"] = node.metadata["nsight_metrics"]
+            next_node.metadata["prev_nsight_metrics"] = node.metadata.get("nsight_metrics")
             next_node.metadata["last_passed_src"] = node.metadata["last_passed_src"]
             next_node.metadata["last_passed_depth"] = node.metadata["last_passed_depth"]
             next_node.metadata["retries_by_depth"] = node.metadata.get("retries_by_depth", {}).copy()

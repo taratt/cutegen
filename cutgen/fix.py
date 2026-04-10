@@ -15,7 +15,11 @@ def get_compile_suggestions(node: Node):
 ```
 The error is:
 {node.metadata['compile'][0:min(len(node.metadata['compile']), COMPILE_LOG_CHARS)]}
-Generate some useful suggestions for fixing the compile error; here's an doc that might have useful information:
+```
+The reference code, which you can use to reason about the intended operation, is:
+```
+{node.ref}
+Reason about what is the underlying issue. Generate some useful suggestions for fixing the compile error; here's an doc that might have useful information:
 {read_file(SKXOSS_BASE_PATH + "/cutgen/prompts/debug_guideline.txt")}
 """
     llm_response = llm_server(prompt)
@@ -29,6 +33,10 @@ def get_correctness_suggestions(node: Node):
 ```
 The error is (if the error is empty it means it is not generating correct outputs):
 {node.metadata['correct'][0:min(len(node.metadata['correct']), COMPILE_LOG_CHARS)]}
+```
+The reference code, which you can use to reason about the intended operation, is:
+```
+{node.ref}
 Generate some useful suggestions for fixing the correctness error; here's a doc that might have useful information:
 {read_file(SKXOSS_BASE_PATH + "/cutgen/prompts/debug_guideline.txt")}
 """
@@ -77,7 +85,10 @@ The error is:
 {node.metadata['compile'][0:min(len(node.metadata['compile']), COMPILE_LOG_CHARS)]}
 {f"Here are some potentially useful suggestions for fixing the compile error: {suggestions}" if retrieve else ""}
 Fix the compile error. DO NOT change the intent of the code by making the CUDA code simpler or use less CUDA. 
-
+```
+The reference code, which you can use to reason about the intended operation, is:
+```
+{node.ref}
 You will output a list of edits to the code. The semantics of the edits is described below:
 {prompt_content}
 

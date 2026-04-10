@@ -32,6 +32,125 @@ from cutgen.config import LOAD_MODEL_BACKOFF_TIME, RUN_MODEL_BACKOFF_TIME, GPU_R
 ####### EVALUATION HELPER FUNCTIONS #######
 import shutil
 
+def tensor_bytes(x: torch.Tensor) -> int:
+    return x.numel() * x.element_size()
+
+def sum_tensor_bytes(xs) -> int:
+    total = 0
+    for x in xs:
+        if isinstance(x, torch.Tensor):
+            total += tensor_bytes(x)
+    return total
+
+def estimate_required_bytes_from_inputs(xs) -> int:
+    """
+    Conservative but not absurd estimate for forward memory.
+
+    We assume roughly:
+      input + output + some overhead
+
+    For elementwise ops this is close to 2x input.
+    For many other kernels this is still a safer heuristic than 3x.
+    """
+    input_bytes = sum_tensor_bytes(xs)
+    return (2 * input_bytes) + (512 << 20)   # +512 MiB buffer
+
+def wait_for_gpu_memory(required_bytes: int, device: int):
+    """
+    Wait until enough GPU memory is available.
+
+    required_bytes is the estimated bytes needed by the upcoming step.
+    We also enforce the configured GPU_REQ_SPACE fraction of total VRAM.
+    """
+    while True:
+        free_b, total_b = torch.cuda.mem_get_info(device)
+        gpu_free_frac = free_b / total_b
+
+        # Need both:
+        #  1) enough absolute free bytes
+        #  2) enough fractional free space from config
+        #if free_b >= required_bytes and gpu_free_frac >= GPU_REQ_SPACE:
+        if free_b >= required_bytes:
+            return
+
+        debug_print(
+            f"[GPU WAIT] free={free_b / (1024**3):.2f} GiB, "
+            f"need={required_bytes / (1024**3):.2f} GiB, "
+            f"gpu_free_frac={gpu_free_frac:.3f}, "
+            f"gpu_req_frac={GPU_REQ_SPACE}"
+        )
+        time.sleep(random.randint(1, 5) * RUN_MODEL_BACKOFF_TIME)
+
+def wait_for_resources(device_index: int):
+    """
+    Wait until CPU usage and GPU free fraction satisfy configured thresholds.
+    """
+    while True:
+        CPU_used = psutil.virtual_memory().percent
+        free_b, total_b = torch.cuda.mem_get_info(device_index)
+        gpu_free_frac = free_b / total_b
+
+        if CPU_used <= CPU_REQ_SPACE and gpu_free_frac >= GPU_REQ_SPACE:
+            return
+
+        debug_print(
+            f"[RESOURCE WAIT] CPU_used={CPU_used:.2f}% "
+            f"(limit {CPU_REQ_SPACE}), "
+            f"GPU_free_frac={gpu_free_frac:.3f} "
+            f"(need >= {GPU_REQ_SPACE})"
+        )
+        time.sleep(random.randint(1, 5) * RUN_MODEL_BACKOFF_TIME)
+
+def clone_to_device(xs, device):
+    ys = []
+    for x in xs:
+        if isinstance(x, torch.Tensor):
+            ys.append(x.detach().clone().cuda(device=device))
+        else:
+            ys.append(x)
+    return ys
+
+def cleanup_cuda(device):
+    try:
+        torch.cuda.synchronize(device=device)
+    except Exception:
+        pass
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    gc.collect()
+
+def validate_tensor_output_contract(ref_output, gen_output, metadata) -> bool:
+    """
+    Enforce that generated output behaves like the reference output:
+    same tensor-ness, device type, dtype, and shape.
+    """
+    if not isinstance(ref_output, torch.Tensor):
+        metadata["correct"] = f"Reference model returned non-tensor output: {type(ref_output)}"
+        return False
+
+    if not isinstance(gen_output, torch.Tensor):
+        metadata["correct"] = f"Generated model returned non-tensor output: {type(gen_output)}"
+        return False
+
+    if ref_output.device.type != gen_output.device.type:
+        metadata["correct"] = (
+            f"Output device mismatch, expected {ref_output.device}, got {gen_output.device}"
+        )
+        return False
+
+    if ref_output.dtype != gen_output.dtype:
+        metadata["correct"] = (
+            f"Output dtype mismatch, expected {ref_output.dtype}, got {gen_output.dtype}"
+        )
+        return False
+
+    if ref_output.shape != gen_output.shape:
+        metadata["correct"] = (
+            f"Output shape mismatch, expected {ref_output.shape}, got {gen_output.shape}"
+        )
+        return False
+
+    return True
 def safe_rmtree(path: str):
     """Delete a directory if it exists, ignore errors."""
     try:
@@ -67,50 +186,56 @@ def load_custom_model(model_custom_src: str, context: dict, metadata: dict, buil
     build_path.mkdir(parents=True, exist_ok=True)
 
     context["BUILD_DIRECTORY"] = build_directory
-    # Add import at the start of the source code
+
     model_custom_src = (
-        "import os\nimport gc\n" f"os.environ['TORCH_EXTENSIONS_DIR'] = '{build_directory}'\n"
-    ) + model_custom_src + "\ntorch.cuda.synchronize()\ntorch.cuda.empty_cache()\ngc.collect()"
+        "import os\nimport gc\n"
+        f"os.environ['TORCH_EXTENSIONS_DIR'] = '{build_directory}'\n"
+    ) + model_custom_src
+
     retval = True
-    
+
     read_fd, write_fd = os.pipe()
     old_out, old_err = os.dup(1), os.dup(2)
 
-    # 2) Point both stdout & stderr at our pipe
     os.dup2(write_fd, 1)
     os.dup2(write_fd, 2)
     os.close(write_fd)
-    
+
     try:
         compile(model_custom_src, "<string>", "exec")
         exec(model_custom_src, context)
-        # Force CUDA synchronization to catch any deferred CUDA errors
         torch.cuda.synchronize()
-        # DANGER: need to delete refernece from global namespace
-    except Exception as e: 
+    except Exception as e:
         metadata["compile"] = f"Syntax error in generated code: {str(e)}"
         retval = None
+
     try:
         ModelNew = context.get("ModelNew")
     except Exception as e:
         metadata["compile"] = f"Error in executing generated code {str(e)}"
         retval = None
-    # retval is default unless there was an error. If there was an error, then attach command line output.
+
     os.dup2(old_out, 1)
     os.dup2(old_err, 2)
     os.close(old_out)
     os.close(old_err)
+
     error = ""
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     gc.collect()
+
     with os.fdopen(read_fd, "r") as log_file:
         error = log_file.read()
+
     if retval is not None:
         return ModelNew
     else:
-        metadata["compile"] += f"\n Here is the full command line of the program execution: {error}" if error != "" else ""
+        metadata["compile"] += (
+            f"\n Here is the full command line of the program execution: {error}"
+            if error != "" else ""
+        )
         return None
 
 def _check_compile(ref_src, gen_src, metadata, build_directory=None):
@@ -510,12 +635,14 @@ def _check_correct(ref_src, gen_src, metadata,
                    num_trials=10, seed_num=42,
                    build_directory=None, device=None):
     """
-    This function checks if the generated source code is correct.
-    Functionality is the same as before, but memory usage is much safer:
-    - models are created once
-    - inputs for generated/reference runs are separated
-    - outputs are moved to CPU before comparison
-    - GPU tensors are freed aggressively between steps
+    Full-size correctness checker.
+
+    Policy:
+    - do NOT slice or chunk inputs
+    - if the reference fits full-size, the generated kernel must fit full-size too
+    - wait for enough free GPU memory before running
+    - enforce output device/dtype/shape contract
+    - compare values on CPU only after contract validation
     """
     torch.cuda.set_device(device)
     metadata["hardware"] = torch.cuda.get_device_name(device=device)
@@ -527,25 +654,6 @@ def _check_correct(ref_src, gen_src, metadata,
     os.environ["TORCH_USE_CUDA_DSA"] = "1"
     os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
 
-    def cleanup():
-        try:
-            torch.cuda.synchronize(device=device)
-        except Exception:
-            pass
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        gc.collect()
-
-    def clone_to_device(xs, device):
-        ys = []
-        for x in xs:
-            if isinstance(x, torch.Tensor):
-                ys.append(x.detach().clone().cuda(device=device))
-            else:
-                ys.append(x)
-        return ys
-
-    # We already know the generated code compiles, so we can load the model
     Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(
         ref_src, ref_context, metadata
     )
@@ -573,7 +681,7 @@ def _check_correct(ref_src, gen_src, metadata,
                 custom_model.eval()
 
         del init_inputs
-        cleanup()
+        cleanup_cuda(device)
 
         pass_count = 0
         torch.manual_seed(seed_num)
@@ -593,7 +701,6 @@ def _check_correct(ref_src, gen_src, metadata,
                     + str(get_inputs_fn.__globals__.get("dim"))
                 )
 
-                # Generate inputs once on CPU
                 set_seed(trial_seed)
                 inputs_cpu = get_inputs_fn()
 
@@ -603,66 +710,109 @@ def _check_correct(ref_src, gen_src, metadata,
                             f"INPUT[{i}] shape={inp.shape}, device={inp.device}, dtype={inp.dtype}"
                         )
 
+                required_bytes = estimate_required_bytes_from_inputs(inputs_cpu)
+                wait_for_gpu_memory(
+                    required_bytes,
+                    device.index if isinstance(device, torch.device) else int(device)
+                )
+
                 # -------- Run generated model first --------
                 try:
                     set_seed(trial_seed)
                     inputs_new = clone_to_device(inputs_cpu, device)
-                except torch.cuda.OutOfMemoryError as e:
-                    metadata["correct"] = f"OOM moving generated-model inputs to GPU: {e}"
-                    cleanup()
-                    return False
-
-                try:
                     output_new = custom_model(*inputs_new)
                     torch.cuda.synchronize(device=device)
+
+                    if not isinstance(output_new, torch.Tensor):
+                        metadata["correct"] = (
+                            f"Generated model returned non-tensor output: {type(output_new)}"
+                        )
+                        cleanup_cuda(device)
+                        return False
+
+                    if not output_new.is_cuda:
+                        metadata["correct"] = (
+                            f"Generated model returned non-CUDA output: {output_new.device}"
+                        )
+                        cleanup_cuda(device)
+                        return False
+
+                    gen_output_shape = output_new.shape
+                    gen_output_dtype = output_new.dtype
+
+                    # IMPORTANT: move generated output to CPU now
                     output_new_cpu = output_new.detach().to(torch.float32).cpu()
+
+                except torch.cuda.OutOfMemoryError as e:
+                    metadata["correct"] = f"OOM in generated model correctness run: {e}"
+                    cleanup_cuda(device)
+                    return False
                 except Exception as e:
                     metadata["correct"] = f"Runtime error when checking correctness (generated model): {str(e)}"
-                    cleanup()
+                    cleanup_cuda(device)
                     return False
                 finally:
                     if "inputs_new" in locals():
                         del inputs_new
                     if "output_new" in locals():
                         del output_new
-                    cleanup()
+                    cleanup_cuda(device)
 
                 # -------- Run reference model second --------
                 try:
                     set_seed(trial_seed)
                     inputs_ref = clone_to_device(inputs_cpu, device)
-                except torch.cuda.OutOfMemoryError as e:
-                    metadata["correct"] = f"OOM moving reference-model inputs to GPU: {e}"
-                    cleanup()
-                    return False
-
-                try:
                     output = original_model(*inputs_ref)
                     torch.cuda.synchronize(device=device)
+
+                    if not isinstance(output, torch.Tensor):
+                        metadata["correct"] = (
+                            f"Reference model returned non-tensor output: {type(output)}"
+                        )
+                        cleanup_cuda(device)
+                        return False
+
+                    if not output.is_cuda:
+                        metadata["correct"] = (
+                            f"Reference model returned non-CUDA output: {output.device}"
+                        )
+                        cleanup_cuda(device)
+                        return False
+
+                    if output.shape != gen_output_shape:
+                        metadata["correct"] = (
+                            f"Output shape mismatch, expected {output.shape}, got {gen_output_shape}"
+                        )
+                        cleanup_cuda(device)
+                        return False
+
+                    if output.dtype != gen_output_dtype:
+                        metadata["correct"] = (
+                            f"Output dtype mismatch, expected {output.dtype}, got {gen_output_dtype}"
+                        )
+                        cleanup_cuda(device)
+                        return False
+
+                    # Move reference output to CPU now
                     output_cpu = output.detach().to(torch.float32).cpu()
+
+                except torch.cuda.OutOfMemoryError as e:
+                    metadata["correct"] = f"OOM in reference model correctness run: {e}"
+                    cleanup_cuda(device)
+                    return False
                 except Exception as e:
                     metadata["correct"] = f"Runtime error when checking correctness (reference model): {str(e)}"
-                    cleanup()
+                    cleanup_cuda(device)
                     return False
                 finally:
                     if "inputs_ref" in locals():
                         del inputs_ref
                     if "output" in locals():
                         del output
-                    cleanup()
+                    cleanup_cuda(device)
 
                 # -------- Compare on CPU --------
-                if output_cpu.shape != output_new_cpu.shape:
-                    metadata["correct"] = (
-                        f"Output shape mismatch, expected {output_cpu.shape}, got {output_new_cpu.shape}"
-                    )
-                    del output_cpu, output_new_cpu, inputs_cpu
-                    cleanup()
-                    continue
-
-                if not torch.allclose(
-                    output_cpu, output_new_cpu, atol=1e-02, rtol=1e-02
-                ):
+                if not torch.allclose(output_cpu, output_new_cpu, atol=1e-02, rtol=1e-02):
                     diff = torch.abs(output_cpu - output_new_cpu)
                     max_diff = diff.max().item()
                     avg_diff = diff.mean().item()
@@ -670,8 +820,8 @@ def _check_correct(ref_src, gen_src, metadata,
                         f"Output value mismatch, max diff: {max_diff}, avg diff: {avg_diff}"
                     )
                     del diff, output_cpu, output_new_cpu, inputs_cpu
-                    cleanup()
-                    continue
+                    cleanup_cuda(device)
+                    return False
                 else:
                     if trial == num_trials - 1:
                         diff = torch.abs(output_cpu - output_new_cpu)
@@ -683,19 +833,19 @@ def _check_correct(ref_src, gen_src, metadata,
                         del diff
 
                 del output_cpu, output_new_cpu, inputs_cpu
-                cleanup()
+                cleanup_cuda(device)
                 pass_count += 1
 
     except Exception as e:
         metadata["correct"] = f"Unexpected error during correctness check: {repr(e)}"
-        cleanup()
+        cleanup_cuda(device)
         return False
 
     try:
         torch.cuda.synchronize(device=device)
     except Exception as e:
         metadata["correct"] = f"Runtime error when checking correctness: {str(e)}"
-        cleanup()
+        cleanup_cuda(device)
         return False
 
     metadata["correct"] = (
@@ -705,65 +855,85 @@ def _check_correct(ref_src, gen_src, metadata,
     if last_diff_msg is not None:
         metadata["correct"] += f"\n{last_diff_msg}"
 
-    cleanup()
+    cleanup_cuda(device)
     return pass_count == num_trials
 
 def _get_wallclock_time(ref_src, gen_src, metadata,
-                            num_warmups=5, num_trials=100, seed_num=42,
-                            build_directory=None, device=None):
+                        num_warmups=5, num_trials=100, seed_num=42,
+                        build_directory=None, device=None):
     """
-    This function gets the wallclock time of the generated source code.
+    Measure full-size wallclock time of the generated source code.
+    Requires the generated kernel to return a CUDA tensor.
     """
-    # device: torch.device = torch.cuda.current_device()
     torch.cuda.set_device(device)
     metadata["hardware"] = torch.cuda.get_device_name(device=device)
     metadata["device"] = str(device)
+
     ref_context = {}
     gen_context = {}
-    os.environ["CUDA_LAUNCH_BLOCKING"] = "0" # don't block CUDA calls for better performance
-    
-     # We already know the generated code compiles and is correct, so we can skip lots of checks
-    Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(ref_src, ref_context, metadata)
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
+
+    Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(
+        ref_src, ref_context, metadata
+    )
     ModelNew = load_custom_model(gen_src, gen_context, metadata, build_directory)
 
     set_seed(seed_num)
     init_inputs = get_init_inputs_fn()
     init_inputs = [
-        x.cuda(device=metadata["device"]) if isinstance(x, torch.Tensor) else x for x in init_inputs
+        x.cuda(device=metadata["device"]) if isinstance(x, torch.Tensor) else x
+        for x in init_inputs
     ]
 
     set_seed(seed_num)
-    inputs = get_inputs_fn()
+    inputs_cpu = get_inputs_fn()
+    required_bytes = estimate_required_bytes_from_inputs(inputs_cpu)
+    wait_for_gpu_memory(
+        required_bytes,
+        device.index if isinstance(device, torch.device) else int(device)
+    )
+
     inputs = [
         x.cuda(device=device) if isinstance(x, torch.Tensor) else x
-        for x in inputs
+        for x in inputs_cpu
     ]
+    del inputs_cpu
+    cleanup_cuda(device)
 
-    custom_model = None
     elapsed_times = []
 
     with torch.no_grad():
-        set_seed(seed_num)  # set seed for reproducible weights
+        set_seed(seed_num)
         custom_model = ModelNew(*init_inputs)
         custom_model = custom_model.cuda(device=device)
 
         for _ in range(num_warmups):
-            custom_model(*inputs)
+            out = custom_model(*inputs)
+            if not isinstance(out, torch.Tensor):
+                raise RuntimeError(f"Generated model returned non-tensor output: {type(out)}")
+            if not out.is_cuda:
+                raise RuntimeError("Generated model returned non-CUDA output during timing")
             torch.cuda.synchronize(device=device)
+            del out
 
         for _ in range(num_trials):
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
 
             start_event.record()
-            custom_model(*inputs)
+            out = custom_model(*inputs)
             end_event.record()
+
+            if not isinstance(out, torch.Tensor):
+                raise RuntimeError(f"Generated model returned non-tensor output: {type(out)}")
+            if not out.is_cuda:
+                raise RuntimeError("Generated model returned non-CUDA output during timing")
 
             torch.cuda.synchronize(device=device)
             elapsed_time_ms = start_event.elapsed_time(end_event)
             elapsed_times.append(elapsed_time_ms)
+            del out
 
-    # timing stats
     timing_stats = {
         "mean": float(f"{np.mean(elapsed_times):.3g}"),
         "std": float(f"{np.std(elapsed_times):.3g}"),
@@ -771,7 +941,9 @@ def _get_wallclock_time(ref_src, gen_src, metadata,
         "max": float(f"{np.max(elapsed_times):.3g}"),
         "num_trials": len(elapsed_times),
     }
-    torch.cuda.synchronize()
+
+    del inputs, init_inputs, custom_model
+    cleanup_cuda(device)
     return timing_stats
 
 
@@ -845,6 +1017,8 @@ def _get_baseline_time(ref_src, metadata,
         "num_trials": len(elapsed_times),
     }
     torch.cuda.synchronize()
+    del inputs, init_inputs, model
+    cleanup_cuda(device)
     return timing_stats
 
 def _get_baseline_time_2(ref_src, metadata,
@@ -910,65 +1084,100 @@ def _get_baseline_time_2(ref_src, metadata,
         "num_trials": len(elapsed_times),
     }
     torch.cuda.synchronize()
+    del inputs, init_inputs, model
+    cleanup_cuda(device)
     return timing_stats
 
 def _get_wallclock_time_2(ref_src, gen_src, metadata,
-                            num_warmups=5, num_trials=100, seed_num=42,
-                            build_directory=None, device=None):
+                          num_warmups=5, num_trials=100, seed_num=42,
+                          build_directory=None, device=None):
     """
-    This function gets the wallclock time of the generated source code.
+    Full-size cold-cache timing of the generated source code.
+    Requires the generated kernel to return a CUDA tensor.
     """
-    # device: torch.device = torch.cuda.current_device()
     torch.cuda.set_device(device)
     metadata["hardware"] = torch.cuda.get_device_name(device=device)
     metadata["device"] = str(device)
+
     ref_context = {}
     gen_context = {}
-    os.environ["CUDA_LAUNCH_BLOCKING"] = "0" # don't block CUDA calls for better performance
-    
-     # We already know the generated code compiles and is correct, so we can skip lots of checks
-    Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(ref_src, ref_context, metadata)
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
+
+    Model, get_init_inputs_fn, get_inputs_fn = load_original_model_and_inputs(
+        ref_src, ref_context, metadata
+    )
     ModelNew = load_custom_model(gen_src, gen_context, metadata, build_directory)
 
     set_seed(seed_num)
     init_inputs = get_init_inputs_fn()
     init_inputs = [
-        x.cuda(device=metadata["device"]) if isinstance(x, torch.Tensor) else x for x in init_inputs
+        x.cuda(device=metadata["device"]) if isinstance(x, torch.Tensor) else x
+        for x in init_inputs
     ]
 
     model = ModelNew(*init_inputs)
     model = model.cuda(device=device)
+
     elapsed_times = []
 
     with torch.no_grad():
-
         for _ in range(num_warmups):
-            inputs = get_inputs_fn()
+            inputs_cpu = get_inputs_fn()
+            required_bytes = estimate_required_bytes_from_inputs(inputs_cpu)
+            wait_for_gpu_memory(
+                required_bytes,
+                device.index if isinstance(device, torch.device) else int(device)
+            )
+
             inputs = [
                 x.cuda(device=device) if isinstance(x, torch.Tensor) else x
-                for x in inputs
+                for x in inputs_cpu
             ]
-            model(*inputs)
+            del inputs_cpu
+
+            out = model(*inputs)
+            if not isinstance(out, torch.Tensor):
+                raise RuntimeError(f"Generated model returned non-tensor output: {type(out)}")
+            if not out.is_cuda:
+                raise RuntimeError("Generated model returned non-CUDA output during timing")
+
             torch.cuda.synchronize(device=device)
+            del out, inputs
+            cleanup_cuda(device)
 
         for _ in range(num_trials):
-            inputs = get_inputs_fn()
+            inputs_cpu = get_inputs_fn()
+            required_bytes = estimate_required_bytes_from_inputs(inputs_cpu)
+            wait_for_gpu_memory(
+                required_bytes,
+                device.index if isinstance(device, torch.device) else int(device)
+            )
+
             inputs = [
                 x.cuda(device=device) if isinstance(x, torch.Tensor) else x
-                for x in inputs
+                for x in inputs_cpu
             ]
+            del inputs_cpu
+
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
 
             start_event.record()
-            model(*inputs)
+            out = model(*inputs)
             end_event.record()
+
+            if not isinstance(out, torch.Tensor):
+                raise RuntimeError(f"Generated model returned non-tensor output: {type(out)}")
+            if not out.is_cuda:
+                raise RuntimeError("Generated model returned non-CUDA output during timing")
 
             torch.cuda.synchronize(device=device)
             elapsed_time_ms = start_event.elapsed_time(end_event)
             elapsed_times.append(elapsed_time_ms)
 
-    # timing stats
+            del out, inputs
+            cleanup_cuda(device)
+
     timing_stats = {
         "mean": float(f"{np.mean(elapsed_times):.3g}"),
         "std": float(f"{np.std(elapsed_times):.3g}"),
@@ -976,7 +1185,9 @@ def _get_wallclock_time_2(ref_src, gen_src, metadata,
         "max": float(f"{np.max(elapsed_times):.3g}"),
         "num_trials": len(elapsed_times),
     }
-    torch.cuda.synchronize()
+
+    del init_inputs, model
+    cleanup_cuda(device)
     return timing_stats
 
 
@@ -1387,6 +1598,7 @@ def run_nsight_profile(
     metadata["profile_cmd"] = " ".join(cmd)
     metadata["profile_stdout"] = proc.stdout
     metadata["profile_stderr"] = proc.stderr
+    print(metadata)
     if proc.returncode == 0:
         metrics = parse_nsight_text_to_metrics(proc.stdout)
         metadata["nsight_metrics"] = metrics
@@ -1405,12 +1617,23 @@ def evaluate(node: Node, get_time=True, get_profile=USE_PROFILING, torch_compile
     This function evaluates the node.
     """
     if node.depth == 0 and node.ref_time is None:
-        node.ref_time = get_baseline_time(node.ref, node.metadata, device=0, torch_compile=torch_compile, torch_compile_mode=torch_compile_mode)
-        debug_print(f"Node {node.uuid} (root node) ref time: {node.ref_time}, benchmarked with torch_compile={torch_compile}, torch_compile_mode={torch_compile_mode}")
-
+        wait_for_resources(0)
+        node.ref_time = get_baseline_time(
+            node.ref,
+            node.metadata,
+            device=0,
+            torch_compile=torch_compile,
+            torch_compile_mode=torch_compile_mode
+        )
+        debug_print(
+            f"Node {node.uuid} (root node) ref time: {node.ref_time}, "
+            f"benchmarked with torch_compile={torch_compile}, "
+            f"torch_compile_mode={torch_compile_mode}"
+        )
+    time.sleep(2)
     flag_compile = False
     flag_correct = False
-    
+
     node.error_type = ErrorType.NONE
     node.metadata["compile"] = ""
     node.metadata["correct"] = ""
@@ -1422,15 +1645,6 @@ def evaluate(node: Node, get_time=True, get_profile=USE_PROFILING, torch_compile
     flag_compile = check_compile(node.ref, node.src, node.metadata, build_directory=build_directory)
 
     debug_print(f"Node {node.uuid} compile: {flag_compile}. Metadata: {node.metadata}")
-    
-    # TODO: check these values and implementation
-    # GPUfree = 1.0 - GPUtil.getGPUs()[0].memoryUtil # Assumes one GPU.
-    CPU_used = psutil.virtual_memory().percent
-    # while (GPU_REQ_SPACE >= GPUfree or CPU_used > CPU_REQ_SPACE):
-    while (CPU_used > CPU_REQ_SPACE):
-        debug_print(f"sleeping for VRAM usage, {CPU_used} on CPU")
-        time.sleep(random.randint(1,20) * RUN_MODEL_BACKOFF_TIME)
-        CPU_used = psutil.virtual_memory().percent
 
     if not flag_compile:
         debug_print(f"Node {node.uuid} compile error: {node.metadata['compile']}. Metadata: {node.metadata}")
@@ -1440,7 +1654,17 @@ def evaluate(node: Node, get_time=True, get_profile=USE_PROFILING, torch_compile
 
     gpu_lock_fd, device = acquire_gpu()
     device = torch.device(f"cuda:{device}")
-    flag_correct = check_correct(node.ref, node.src, node.metadata, build_directory=build_directory, device=device)
+
+    wait_for_resources(device.index)
+
+    flag_correct = check_correct(
+        node.ref,
+        node.src,
+        node.metadata,
+        build_directory=build_directory,
+        device=device
+    )
+
     release_gpu(device, gpu_lock_fd)
 
     if not flag_correct:
@@ -1449,24 +1673,38 @@ def evaluate(node: Node, get_time=True, get_profile=USE_PROFILING, torch_compile
         remove_build_directory(build_directory)
         return
 
-    # by now, the code is correct and compiled
     node.error_type = ErrorType.PASS
     debug_print(f"Node {node.uuid} compile and correct. Metadata: {node.metadata}")
 
     if get_time:
         gpu_lock_fd, device = acquire_gpu()
         device = torch.device(f"cuda:{device}")
-        time_stats = get_wallclock_time(node.ref, node.src, node.metadata, build_directory=build_directory, device=device)
+
+        wait_for_resources(device.index)
+
+        time_stats = get_wallclock_time(
+            node.ref,
+            node.src,
+            node.metadata,
+            build_directory=build_directory,
+            device=device
+        )
+
         release_gpu(device, gpu_lock_fd)
         node.time = time_stats
+
         best_time = float(read_file_with_lock(f"{node.save_folder_path}/best_time.txt"))
         if best_time > time_stats["mean"]:
-            write_file_with_lock(f"{node.save_folder_path}/best_time.txt", str(time_stats["mean"])) # TODO: save best time stats to file
+            write_file_with_lock(f"{node.save_folder_path}/best_time.txt", str(time_stats["mean"]))
+
         debug_print(f"Node {node.uuid} time: {time_stats}")
 
     if get_profile:
         gpu_lock_fd, device = acquire_gpu()
         device = torch.device(f"cuda:{device}")
+
+        wait_for_resources(device.index)
+
         perf_stats = run_nsight_profile(
             node.ref,
             node.src,
@@ -1480,5 +1718,4 @@ def evaluate(node: Node, get_time=True, get_profile=USE_PROFILING, torch_compile
         debug_print(f"Node {node.uuid} profile: {perf_stats}")
 
     remove_build_directory(build_directory)
-
     return node

@@ -37,7 +37,26 @@ When you are given incorrect CUDA/CuTe code, follow this strict workflow:
      - invariants that must remain true (tiling strategy, pipeline stages, shared-memory staging, etc.)
    * Confirm what you will NOT change (see Non-Negotiable Rule above).
 
-2) **Localize the bug without de-optimizing**
+2) **Freeze convolution semantic contract (REQUIRED for conv / conv-transpose / conv-like kernels)**
+   * Before changing any convolution kernel, explicitly freeze:
+     - the logical input layout used by the task/reference
+       - e.g. `(N,C,D,H,W)` vs `(N,C,H,W,D)`
+     - the logical weight layout used by the task/reference
+       - e.g. `(C_out, C_in/groups, Kd, Kh, Kw)`
+     - which spatial axes the kernel actually slides over
+     - which axis, if any, has kernel extent 1
+     - the exact output-shape formula for those axes
+   * Do **NOT** silently “normalize” the kernel to standard PyTorch conventions unless the task definition itself proves those conventions.
+   * If the task docstring, `get_inputs()`, reference code, and expected output shape disagree with your assumption, trust the task/reference semantics first and resolve that conflict before editing CUDA/CuTe code.
+   * Required check before proposing a fix:
+     - write the expected output shape from the task definition
+     - write the output shape produced by the current kernel’s indexing/shape formula
+     - if they differ, fix semantic/layout interpretation first, not low-level CUDA details
+   * Typical failure pattern this prevents:
+     - the kernel is mathematically correct for `(N,C,D,H,W)` but the task actually uses `(N,C,H,W,D)`, or vice versa
+     - a `(K,K,1)` kernel is accidentally turned into a `(1,K,K)` kernel by changing axis interpretation
+
+3) **Localize the bug without de-optimizing**
    * You may add:
      - debug prints (guarded)
      - assertions
@@ -46,7 +65,7 @@ When you are given incorrect CUDA/CuTe code, follow this strict workflow:
      - temporary extra sync for diagnosis (then remove once fixed)
    * You may NOT replace the CuTe structure with a simpler kernel “just for debugging.”
 
-3) **Fix in the smallest possible CuTe-native way**
+4) **Fix in the smallest possible CuTe-native way**
    * Typical correct fixes:
      - wrong `Layout` (shape/stride mismatch)
      - wrong tile view (`local_tile`, `tile`, `partition_*`) producing permuted coordinates
@@ -56,12 +75,15 @@ When you are given incorrect CUDA/CuTe code, follow this strict workflow:
      - wrong accumulator type / epilogue cast timing
    * Avoid “global refactors.” Make one change, re-test.
 
-4) **Prove the fix**
+5) **Prove the fix**
    * Provide:
      - a short statement of what was wrong
      - what changed
      - why it preserves intent
      - how it was validated (small cases + at least one edge case)
+   * For CuTe GEMM-like or convolution kernels, “validated” means more than compiling:
+     - confirm the logical tensor/layout/axis roles are still correct after the change
+     - confirm the output-shape formula still matches the task/reference
 
 ===============================================================================
 PART 1: CORE CONCEPTS
@@ -119,6 +141,28 @@ High-frequency LLM failure modes (check before anything else):
 3) If using float4/vec fast path: gate by alignment + stride==1, and correctly handle M not divisible by 4.
 4) Do NOT add “fake CuTe” no-ops (unused make_shape/make_stride). If CuTe is kept, it must be used for indexing (cute::Tensor / layouts), otherwise remove it.
 5) Do not use cuBLAS, do not change precision, do not add PyTorch ops in forward() (must be a single extension call).
+
+E) Distinguish “correct but slow” from “incorrect semantics”
+
+For convolution kernels, a kernel may be fully correct yet still be a poor implementation.
+
+Before proposing a correctness fix, classify the kernel into one of these buckets:
+
+1. **Semantic/layout bug**
+   - wrong axis order
+   - wrong weight layout
+   - wrong output-shape formula
+   - wrong interpretation of asymmetric or kernel-size-1 dimensions
+
+2. **Fragment/tile bug**
+   - wrong CuTe tile mapping
+   - wrong partition semantics
+   - wrong MMA/GEMM fragment roles
+   - wrong smem layout or epilogue masking
+
+
+Do not misdiagnose a structurally naive kernel as a correctness bug.
+If the kernel passes correctness but is still very slow, switch to performance diagnosis.
 ===============================================================================
 PART 4: ASYNC COPY & SYNC
 =========================
@@ -147,6 +191,72 @@ PART 5: MMA / TiledMMA PITFALLS
 - Debug rule: prove A/B fragments contain the intended values *before* blaming MMA.
 ### 4) CuTe GEMM static-assert failures: debug partition *semantics*, not just types
 If compilation fails inside `cute/algorithm/gemm.hpp` with `static_assert` errors involving checks like `size<1>(A) == size<1>(B)`, `size<0>(B) == size<1>(C)`, `size<1>(B) == size<2>(C)`, or similar, treat this as a **fragment-shape mismatch caused by incorrect tiling/partition mapping**. In practice, this usually means one of the `local_tile(...)`, `local_partition(...)`, `Step<...>`, or thread-fragment layouts is assigning the wrong logical role to a dimension. For GEMM, explicitly verify that the fragments presented to `gemm(...)` obey the contract `A = (M_tile, K_tile)`, `B = (K_tile, N_tile)`, and `C/Acc = (M_tile, N_tile)`. Do **not** just tweak types blindly. Instead, inspect whether (1) CTA tiling mapped B through the wrong tiler axis, (2) the shared→compute partition for B accidentally broadcasts or collapses K/N, or (3) the compute micro-tile layout (`tC`, accumulator fragment, or MMA fragment shape) is inconsistent with what CuTe infers. When fixing this class of bug, prefer the smallest structural correction: repair the `Step<...>` mapping, repair the partition direction, or make the compute micro-tile match the implied GEMM fragment shape. After the fix, explicitly state the resulting fragment shapes, e.g. `tCsA = (16,8)`, `tCsB = (8,16)`, `tCrC = (16,16)`, and confirm that they satisfy the GEMM contract before recompiling.
+### 5) Implicit-GEMM convolution kernels: verify the logical GEMM mapping end-to-end
+
+For convolution kernels rewritten as implicit GEMM, do NOT stop after making CuTe ranks compile.
+A kernel can compile and still be numerically wrong if the logical roles of A, B, and C are inconsistent.
+
+For implicit-GEMM conv2d/conv3d, explicitly write down:
+
+- What GEMM dimensions mean:
+  - `M` = output channels per group (or equivalent output feature dimension)
+  - `N` = output spatial positions (e.g. `OH*OW`, `OD*OH*OW`)
+  - `K` = reduction dimension (e.g. `IC_per_group * KH * KW`, or `IC_per_group * KD * KH * KW`)
+
+- What each operand means:
+  - `A(M,K)` = weights / filters
+  - `B(K,N)` = im2col-style activation tile
+  - `C(M,N)` = output tile
+
+Then prove all three levels are consistent:
+
+1. **Global-memory semantics**
+   - Confirm the flattened indexing really matches the intended GEMM mapping.
+   - For the activation/im2col operand, verify that decoding `k -> (ic, kh, kw, ...)` and `n -> (oh, ow, ...)` is correct.
+   - Check group offsets explicitly.
+
+2. **Shared-memory semantics**
+   - State the exact shared-memory tile shapes.
+   - For `A`, confirm smem is loaded as `(M_tile, K_tile)`.
+   - For `B`, confirm smem is loaded as `(K_tile, N_tile)` — this is a very common bug.
+   - Do not accept “same elements, different orientation” as harmless; CuTe GEMM is layout-sensitive.
+
+3. **Thread-fragment semantics**
+   - After `local_partition(...)`, explicitly state:
+     - `tCsA = (M_frag, K_frag)`
+     - `tCsB = (K_frag, N_frag)`
+     - `tCrC = (M_frag, N_frag)`
+   - If you cannot state these shapes and roles clearly, do not claim the fix is correct.
+
+4. **CTA/output tiling rank sanity**
+   - If output `C` is a 2D tensor `(M,N)`, then:
+     - CTA tiler must be 2D
+     - CTA coord must be 2D
+     - `local_tile(...)` / `Step<...>` rank must match that 2D structure
+   - Do not pass a 3D coord (e.g. extra `_`) to a 2D tile unless the tensor/tile/projection ranks are explicitly designed for that.
+
+5. **B-operand warning**
+   - The most common implicit-GEMM conv bug is fixing `B` by only changing the smem declaration or only changing the store order.
+   - That is NOT sufficient unless the downstream `local_partition(...)` and `gemm(...)` now see `B` as `(K_frag, N_frag)`.
+   - If `B` was previously treated as `(N,K)` anywhere in the pipeline, re-check:
+     - smem shape
+     - smem write indices
+     - partition direction / `Step<...>`
+     - resulting fragment shape seen by `gemm(...)`
+
+6. **Do not trust an epilogue-only fix**
+   - If max error remains nontrivial after masking stores, the bug is likely in operand mapping or fragment semantics, not just in the ragged-edge store.
+   - Edge masking can fix OOB corruption, but it cannot fix a wrong GEMM contraction.
+
+7. **Required proof before declaring success**
+   - Provide a short table or statement like:
+     - `A tile in smem: (128,8) = (M_tile,K_tile)`
+     - `B tile in smem: (8,128) = (K_tile,N_tile)`
+     - `C tile in gmem: (128,128) = (M_tile,N_tile)`
+     - `tCsA = (8,8)`, `tCsB = (8,8)`, `tCrC = (8,8)` with the correct logical roles
+   - Then state why the contraction now matches `C[m,n] += A[m,k] * B[k,n]`.
+
+If a patch fixes compilation by changing ranks, shapes, or tile declarations but does NOT re-prove the A/B/C logical roles above, treat the kernel as still suspect.
 ===============================================================================
 PART 6: MEMORY & OOM PITFALLS (IMPORTANT FOR LLMs)
 =================================================

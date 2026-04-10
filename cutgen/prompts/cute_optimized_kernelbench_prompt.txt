@@ -14,7 +14,8 @@ You must output REAL compilable code (not pseudocode) and preserve the original 
 Before optimizing, infer what type of kernel this is:
 (A) Matrix Multiply / GEMM-like kernel (e.g., C = A @ B, A*C + A*D, batched GEMM, etc.)
 (B) Activation / Elementwise kernel (e.g., ReLU, tanh, sigmoid, GELU, add+relu, bias+relu, clamp, etc.)
-(C) Other (if neither fits, apply safe general GPU optimizations only)
+(C) Convolution kernel (e.g., 1D/2D/3D convolution, depthwise convolution, grouped convolution, pointwise convolution, spatial convolution, conv-like sliding-window operators)
+(D) Other (if none of the above fits, apply safe general GPU optimizations only)
 
 Your optimization choice MUST match the kernel type.
 
@@ -61,7 +62,170 @@ Rules for elementwise kernels:
 - It is acceptable to specialize to the exact dtype and contiguous layout if the original code already assumes it.
 
 ===========================================================
-If the kernel is (C) Other / unclear:
+===========================================================
+If the kernel is (C) Convolution kernel:
+
+Pick ONE of the following effective optimizations (only one):
+
+1) Output / spatial tiling (CTA-level tiling over output height/width)
+2) Shared-memory staging of input tiles
+3) Shared-memory or register reuse of filter tiles
+4) Thread-level register blocking (each thread computes multiple outputs)
+5) Warp-level or CTA-level cooperative computation
+6) CuTe tiled tensor partitioning (real tiling, not scalar loops)
+7) Pipelined staged loads (cp.async or double-buffering)
+8) Implicit GEMM restructuring (ONLY if convolution structure supports it)
+9) Tensor Core MMA usage (ONLY if data layout and sizes allow it)
+10) Improve global memory coalescing and reuse
+
+Rules for convolution:
+
+- Convolution performance is dominated by data reuse, not arithmetic.
+- Nearby output elements reuse the same input and filter data.
+- Threads should cooperate on tiles whenever reuse exists.
+
+The strongest optimizations for convolution are:
+
+- output tiling
+- shared-memory staging
+- register reuse
+- cooperative thread execution
+
+Prefer these before any micro-optimizations.
+
+-----------------------------------------------------------
+IMPORTANT PERFORMANCE PRINCIPLE
+
+If the kernel has:
+
+- nested loops over channels and kernel elements
+- one thread computing one output
+- repeated global memory loads
+- no shared-memory staging
+- no cooperative tiling
+
+Then the kernel is still a direct convolution implementation.
+
+Direct convolution is usually very slow.
+
+Your goal is to transform the kernel into a tiled implementation.
+
+-----------------------------------------------------------
+When to use each optimization
+
+Output / spatial tiling:
+
+Use when:
+
+- output spatial dimensions are large
+- neighboring outputs reuse input data
+
+This is the most common and most effective first optimization.
+
+-----------------------------------------------------------
+
+Shared-memory staging:
+
+Use when:
+
+- multiple threads reuse the same input or filter data
+- the same input patch is used by nearby outputs
+
+This is one of the highest-impact optimizations for convolution.
+
+-----------------------------------------------------------
+
+Register blocking:
+
+Use when:
+
+- each thread can compute multiple outputs
+- reuse exists within the thread
+
+-----------------------------------------------------------
+
+CuTe partitioning:
+
+Use when:
+
+- threads can cooperate on tiles
+- the kernel already uses CuTe tensors
+- a clear tile structure exists
+
+Do NOT use CuTe only as an indexing wrapper.
+
+-----------------------------------------------------------
+
+Implicit GEMM restructuring:
+
+Use when:
+
+- convolution resembles matrix multiplication
+- reduction dimension is large
+- tensor shapes are regular
+
+-----------------------------------------------------------
+
+Memory access optimization:
+
+Use when:
+
+- loads are strided
+- memory accesses are not coalesced
+- reuse is already implemented
+
+Do NOT choose this if tiling or staging is missing.
+
+-----------------------------------------------------------
+Optimization priority order
+
+When the kernel is slow, prefer optimizations in this order:
+
+1) Output / spatial tiling
+2) Shared-memory staging
+3) Register blocking
+4) Cooperative thread execution
+5) Memory access optimization
+6) Indexing cleanup
+
+Avoid starting with:
+
+- vectorization
+- bounds hoisting
+- arithmetic simplification
+- small loop optimizations
+
+These rarely produce large speedups for convolution.
+
+-----------------------------------------------------------
+CuTe-specific rules
+
+Use CuTe to:
+
+- define tiled tensor layouts
+- partition work across threads
+- organize shared-memory tiles
+- implement cooperative computation
+
+Do NOT use CuTe only for:
+
+- indexing convenience
+- scalar loops
+- cosmetic structure
+
+-----------------------------------------------------------
+Hard rules
+
+- Preserve exact convolution semantics
+- Preserve stride / padding / dilation / groups behavior
+- Do NOT change precision
+- Do NOT use cuBLAS or cuDNN
+- Do NOT fall back to PyTorch operators
+- Implement exactly ONE optimization attempt
+- Prefer structural reuse over local micro-optimizations
+
+
+If the kernel is (D) Other / unclear:
 Apply ONE safe general GPU optimization:
 - vectorized load/store OR
 - better bounds handling OR
@@ -78,5 +242,24 @@ Additional hard constraints:
 - Pay attention to alignment, indexing correctness, and avoiding out-of-bounds accesses.
 
 Make sure the optimized code implements the same functionality as the previous version.
+
+===========================================================
+Performance red flags that indicate a naive kernel
+
+When profiler data is available, treat the following as strong signals that the kernel
+is structurally weak:
+
+- very high duration relative to the reference
+- high registers/thread causing occupancy collapse
+- full or high occupancy but still huge runtime
+- little or no shared-memory usage in a kernel with heavy reuse potential
+- compute-heavy direct accumulation with no tensor-core/GEMM structure
+- huge grid with one-thread-per-output or tiny register blocking only
+
+Interpretation guide:
+- High occupancy does NOT mean a kernel is good.
+- CuTe usage does NOT mean the kernel is tiled.
+- Shared-memory staging of one operand alone does NOT guarantee speedup.
+- If runtime is still very high, ask whether the kernel is still fundamentally direct.
 {addendum}
 """
