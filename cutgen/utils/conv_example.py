@@ -1,214 +1,36 @@
-You write custom CUDA kernels using CUTE to replace the pytorch operators in the given architecture to get speedups.
-
-Here's an example to show you the syntax of inline embedding custom CUTE/CUDA operators in torch: The example given architecture is:
-```
+#!/usr/bin/env python3
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 
-class Model(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-
-    def forward(self, a, b):
-        return a + b
-
-
-def get_inputs():
-    # randomly generate input tensors based on the model architecture
-    a = torch.randn(1, 128).cuda()
-    b = torch.randn(1, 128).cuda()
-    return [a, b]
-
-
-def get_init_inputs():
-    # randomly generate tensors required for initialization based on the model architecture
-    return []
-```
-
-The example new arch with custom CUTE kernels looks like this:
-```
-import os
-import torch
-import torch.nn as nn
-from torch.utils.cpp_extension import load_inline
-
-atb_cpp_decl = r\"\"\"
-#include <torch/extension.h>
-torch::Tensor atb_gemm(torch::Tensor A, torch::Tensor B);
-\"\"\"
-
-atb_cuda_src = r\"\"\"
-#include <torch/extension.h>
-#include <cuda_runtime.h>
-#include <c10/cuda/CUDAStream.h>
-
-#include <cute/tensor.hpp>
-
-// Kernel: GEMM C = A^T * B
-template <class TA, class TB, class TC>
-__global__ static void
-gemm_device(cute::Shape<int,int,int> shape_MNK,
-            TA const* A, cute::Stride<int,int> dA,
-            TB const* B, cute::Stride<int,int> dB,
-            TC      * C, cute::Stride<int,int> dC)
-{
-  using namespace cute;
-
-  // Represent full tensors
-  Tensor mA = make_tensor(make_gmem_ptr(A), make_shape(shape_MNK[0], shape_MNK[2]), dA); // (M,K)
-  Tensor mB = make_tensor(make_gmem_ptr(B), make_shape(shape_MNK[1], shape_MNK[2]), dB); // (N,K)
-  Tensor mC = make_tensor(make_gmem_ptr(C), make_shape(shape_MNK[0], shape_MNK[1]), dC); // (M,N)
-
-  // Tile
-  auto cta_tiler = make_shape(Int<128>{}, Int<128>{}, Int<8>{});
-  auto cta_coord = make_coord(blockIdx.x, blockIdx.y, _);
-  Tensor gA = local_tile(mA, cta_tiler, cta_coord, Step<_1,X,_1>{});
-  Tensor gB = local_tile(mB, cta_tiler, cta_coord, Step<X,_1,_1>{});
-  Tensor gC = local_tile(mC, cta_tiler, cta_coord, Step<_1,_1,X>{});
-
-  // Shared memory
-  __shared__ TA smemA[128*8];
-  __shared__ TB smemB[128*8];
-  Tensor sA = make_tensor(make_smem_ptr(smemA), make_shape(Int<128>{}, Int<8>{}));
-  Tensor sB = make_tensor(make_smem_ptr(smemB), make_shape(Int<128>{}, Int<8>{}));
-
-  // Thread layouts
-  auto tA = make_layout(make_shape(Int<32>{}, Int<8>{}));
-  auto tB = make_layout(make_shape(Int<32>{}, Int<8>{}));
-  auto tC = make_layout(make_shape(Int<16>{}, Int<16>{}));
-
-  Tensor tAgA = local_partition(gA, tA, threadIdx.x);
-  Tensor tAsA = local_partition(sA, tA, threadIdx.x);
-  Tensor tBgB = local_partition(gB, tB, threadIdx.x);
-  Tensor tBsB = local_partition(sB, tB, threadIdx.x);
-
-  Tensor tCsA = local_partition(sA, tC, threadIdx.x, Step<_1,X>{});
-  Tensor tCsB = local_partition(sB, tC, threadIdx.x, Step<X,_1>{});
-  Tensor tCgC = local_partition(gC, tC, threadIdx.x, Step<_1,_1>{});
-
-  Tensor tCrC = make_tensor_like(tCgC);
-  clear(tCrC);
-
-  // Loop over K
-  int K_TILE_MAX = size<2>(tAgA);
-  for (int k_tile = 0; k_tile < K_TILE_MAX; ++k_tile) {
-    copy(tAgA(_,_,k_tile), tAsA);
-    copy(tBgB(_,_,k_tile), tBsB);
-
-    cp_async_fence();
-    cp_async_wait<0>();
-    __syncthreads();
-
-    gemm(tCsA, tCsB, tCrC);
-    __syncthreads();
-  }
-
-  // Epilogue
-  axpby(1.0f, tCrC, 0.0f, tCgC);
-}
-
-// Host wrapper
-torch::Tensor atb_gemm(torch::Tensor A, torch::Tensor B) {
-  TORCH_CHECK(A.is_cuda() && B.is_cuda(), "A and B must be CUDA tensors");
-  TORCH_CHECK(A.dim()==2 && B.dim()==2,  "A and B must be 2D");
-  TORCH_CHECK(A.scalar_type()==at::kFloat && B.scalar_type()==at::kFloat,
-              "Expect float32 tensors");
-
-  // A:[K,M], B:[K,N] → C = A^T @ B
-  int K = (int)A.size(0);
-  int M = (int)A.size(1);
-  int N = (int)B.size(1);
-  TORCH_CHECK((int)B.size(0)==K, "B.size(0) must equal K");
-
-  auto A_c = A.contiguous();
-  auto B_c = B.contiguous();
-  auto C   = torch::empty({M, N}, A.options());
-
-  auto ptrA = A_c.data_ptr<float>();
-  auto ptrB = B_c.data_ptr<float>();
-  auto ptrC = C.data_ptr<float>();
-
-  auto dA = make_stride(Int<1>{}, M);
-  auto dB = make_stride(Int<1>{}, N);
-  auto dC = make_stride(Int<1>{}, N);
-  auto shape_MNK = make_shape(M, N, K);
-
-  dim3 dimBlock(256);
-  dim3 dimGrid((M+127)/128, (N+127)/128);
-
-  cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
-  gemm_device<<<dimGrid, dimBlock, 0, stream>>>(shape_MNK, ptrA, dA, ptrB, dB, ptrC, dC);
-
-  auto err = cudaGetLastError();
-  TORCH_CHECK(err == cudaSuccess, "CUTE gemm launch failed: ", cudaGetErrorString(err));
-
-  return C;
-}
-\"\"\"
-
-cutlass_atb = load_inline(
-    name="cutlass_atb_inline",
-    cpp_sources=atb_cpp_decl,               # forward declaration (wrapper sees the symbol)
-    cuda_sources=atb_cuda_src,              # implementation lives here
-    functions=["atb_gemm"],                 # auto-generate pybind wrapper
-    # extra_include_paths=[], NO NEED TO INCLUDE EXTRA BECAUSE CUTLASS HEADERS IN PATH ALREADY
-    extra_cflags=["-O3"],
-    extra_cuda_cflags=["-O3"],              # DO NOT ADD gencode, JUST LET COMPILER TO FIND AVAILABLE ARCH, BECAUSE THIS LATER WILL BE TESTED
-    verbose=False,
-)
-
-class ModelNew(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self._ext = cutlass_atb
-
-    def forward(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
-        return self._ext.atb_gemm(A, B)
-```
-Here is also a base example of a convolution kernel to show you how they are written in CuTe:
-The torch task:
-
-```
+# ============================================================
+# 1) Reference task code
+# ============================================================
+REF_SRC = r'''
 import torch
 import torch.nn as nn
 
 class Model(nn.Module):
     """
     Performs a transposed 3D convolution operation with asymmetric input and kernel sizes.
-
-    Args:
-        in_channels (int): Number of channels in the input tensor.
-        out_channels (int): Number of channels produced by the convolution.
-        kernel_size (tuple): Tuple of 3 integers representing the kernel size in the form (depth, height, width).
-        stride (tuple, optional): Tuple of 3 integers representing the stride in the form (depth, height, width). Defaults to (1, 1, 1).
-        padding (tuple, optional): Tuple of 3 integers representing the padding in the form (depth, height, width). Defaults to (0, 0, 0).
-        output_padding (tuple, optional): Tuple of 3 integers representing the output padding in the form (depth, height, width). Defaults to (0, 0, 0).
-        groups (int, optional): Number of blocked connections from input channels to output channels. Defaults to 1.
-        bias (bool, optional): If `True`, adds a learnable bias to the output. Defaults to `False`.
     """
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: tuple, stride: tuple = (1, 1, 1), padding: tuple = (0, 0, 0), output_padding: tuple = (0, 0, 0), groups: int = 1, bias: bool = False):
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: tuple,
+                 stride: tuple = (1, 1, 1), padding: tuple = (0, 0, 0),
+                 output_padding: tuple = (0, 0, 0), groups: int = 1, bias: bool = False):
         super(Model, self).__init__()
-        self.conv_transpose3d = nn.ConvTranspose3d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, output_padding=output_padding, groups=groups, bias=bias)
+        self.conv_transpose3d = nn.ConvTranspose3d(
+            in_channels, out_channels, kernel_size,
+            stride=stride, padding=padding, output_padding=output_padding,
+            groups=groups, bias=bias
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Performs the transposed 3D convolution.
-
-        Args:
-            x (torch.Tensor): Input tensor of shape (batch_size, in_channels, depth_in, height_in, width_in).
-
-        Returns:
-            torch.Tensor: Output tensor of shape (batch_size, out_channels, depth_out, height_out, width_out).
-        """
         return self.conv_transpose3d(x)
 
 # Test code
 batch_size = 16
 in_channels = 32
 out_channels = 16
-kernel_size = (3, 5, 7)  # Asymmetric kernel size
+kernel_size = (3, 5, 7)
 depth_in = 16
 height_in = 32
 width_in = 64
@@ -218,11 +40,15 @@ def get_inputs():
     return [x]
 
 def get_init_inputs():
-    return [in_channels, out_channels, kernel_size]  # Provide in_channels, out_channels, kernel_size for initialization
-```
+    return [in_channels, out_channels, kernel_size]
+'''
 
-The example new arch with custom convolution CUTE kernels looks like this:
-```
+
+# ============================================================
+# 2) Generated source
+#    This is the corrected version with explicit mY(oc, p) store.
+# ============================================================
+GEN_SRC = r'''
 import os
 import math
 import torch
@@ -626,11 +452,168 @@ class ModelNew(nn.Module):
             int(opd), int(oph), int(opw),
             int(self.groups),
         )
-```
+'''
 
-Here's the architecture you need to optimize:
-```
-<REF>
-```
-Implement the architecture named Model with custom CUTE operators! Name your output architecture ModelNew, and make sure that it uses CUTE/CUDA kernels that you wrote for all of the underlying computation in forward(). Make sure that the written CUTE is correct and complete, and that it implements the requested functions. Output the new code in CODEBLOCKS (wrap in ``` and ```). Please generate real code, NOT pseudocode, make sure the code compiles and is fully functional. Just output the new model code, no other text, and NO testing code! This is very important! Generate ONLY ONE kernel for the entire torch module, not one kernel per operator.
 
+# ============================================================
+# 3) Helpers
+# ============================================================
+def load_ctx(src: str):
+    ctx = {}
+    exec(src, ctx, ctx)
+    return ctx
+
+
+def instantiate_model_with_inputs(ctx, class_name: str, init_inputs, device: torch.device):
+    ModelCls = ctx[class_name]
+    model = ModelCls(*init_inputs).to(device)
+    model.eval()
+    return model
+
+
+def clone_weights_from_ref_to_gen(ref_model, gen_model):
+    ref_sd = ref_model.state_dict()
+    gen_sd = gen_model.state_dict()
+
+    copied = []
+
+    # First try exact-name matches
+    for gk in list(gen_sd.keys()):
+        if gk in ref_sd and tuple(gen_sd[gk].shape) == tuple(ref_sd[gk].shape):
+            gen_sd[gk].copy_(ref_sd[gk])
+            copied.append((gk, gk))
+
+    # If exact names failed, fall back to common suffix-based mapping
+    # e.g. conv_transpose3d.weight -> weight
+    for gk in list(gen_sd.keys()):
+        if any(gk == pair[0] for pair in copied):
+            continue
+
+        candidates = []
+        for rk in ref_sd.keys():
+            if rk.endswith("." + gk) or rk == gk:
+                if tuple(ref_sd[rk].shape) == tuple(gen_sd[gk].shape):
+                    candidates.append(rk)
+
+        if len(candidates) == 1:
+            rk = candidates[0]
+            gen_sd[gk].copy_(ref_sd[rk])
+            copied.append((gk, rk))
+
+    gen_model.load_state_dict(gen_sd, strict=False)
+    return copied
+
+
+@torch.no_grad()
+def check_correctness(device="cuda", atol=1e-4, rtol=1e-4, seed=0):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    ref_ctx = load_ctx(REF_SRC)
+    gen_ctx = load_ctx(GEN_SRC)
+
+    init_inputs = ref_ctx["get_init_inputs"]() if "get_init_inputs" in ref_ctx else []
+
+    ref_model = instantiate_model_with_inputs(ref_ctx, "Model", init_inputs, torch.device(device))
+    gen_model = instantiate_model_with_inputs(gen_ctx, "ModelNew", init_inputs, torch.device(device))
+
+    copied = clone_weights_from_ref_to_gen(ref_model, gen_model)
+
+    inputs = ref_ctx["get_inputs"]()
+    inputs = [x.to(device) if torch.is_tensor(x) else x for x in inputs]
+
+    y_ref = ref_model(*inputs)
+    y_gen = gen_model(*inputs)
+
+    same_shape = tuple(y_ref.shape) == tuple(y_gen.shape)
+    ok = same_shape and torch.allclose(y_ref, y_gen, atol=atol, rtol=rtol)
+
+    max_abs = (y_ref - y_gen).abs().max().item() if same_shape else float("inf")
+    denom = y_ref.abs().max().item() if same_shape else 0.0
+    max_rel = max_abs / (denom + 1e-12) if same_shape else float("inf")
+
+    print("\n[correctness]")
+    print("init_inputs:", init_inputs)
+    print("copied_params:", copied)
+    print("ref_shape:", tuple(y_ref.shape))
+    print("gen_shape:", tuple(y_gen.shape))
+    print("allclose:", ok)
+    print("max_abs_err:", max_abs)
+    print("max_rel_err:", max_rel)
+
+    return ok
+
+
+@torch.no_grad()
+def benchmark_model(model, inputs, warmups=10, iters=50):
+    for _ in range(warmups):
+        _ = model(*inputs)
+    torch.cuda.synchronize()
+
+    times = []
+    for _ in range(iters):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        _ = model(*inputs)
+        end.record()
+        torch.cuda.synchronize()
+        times.append(start.elapsed_time(end))
+
+    mean_ms = sum(times) / len(times)
+    std_ms = (sum((t - mean_ms) ** 2 for t in times) / len(times)) ** 0.5
+    return mean_ms, std_ms
+
+
+@torch.no_grad()
+def check_performance(device="cuda", seed=0, warmups=10, iters=50):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    ref_ctx = load_ctx(REF_SRC)
+    gen_ctx = load_ctx(GEN_SRC)
+
+    init_inputs = ref_ctx["get_init_inputs"]() if "get_init_inputs" in ref_ctx else []
+
+    ref_model = instantiate_model_with_inputs(ref_ctx, "Model", init_inputs, torch.device(device))
+    gen_model = instantiate_model_with_inputs(gen_ctx, "ModelNew", init_inputs, torch.device(device))
+
+    clone_weights_from_ref_to_gen(ref_model, gen_model)
+
+    inputs = ref_ctx["get_inputs"]()
+    inputs = [x.to(device) if torch.is_tensor(x) else x for x in inputs]
+
+    ref_mean, ref_std = benchmark_model(ref_model, inputs, warmups=warmups, iters=iters)
+    gen_mean, gen_std = benchmark_model(gen_model, inputs, warmups=warmups, iters=iters)
+
+    speedup = ref_mean / gen_mean if gen_mean > 0 else float("inf")
+
+    print("\n[performance]")
+    print(f"ref_mean_ms: {ref_mean:.6f}")
+    print(f"ref_std_ms : {ref_std:.6f}")
+    print(f"gen_mean_ms: {gen_mean:.6f}")
+    print(f"gen_std_ms : {gen_std:.6f}")
+    print(f"speedup    : {speedup:.4f}x")
+
+    return speedup
+
+
+if __name__ == "__main__":
+    assert torch.cuda.is_available(), "CUDA is required"
+
+    ok = check_correctness(
+        device="cuda",
+        atol=1e-4,
+        rtol=1e-4,
+        seed=0,
+    )
+
+    if ok:
+        check_performance(
+            device="cuda",
+            seed=0,
+            warmups=10,
+            iters=50,
+        )
+    else:
+        print("\nSkipping performance because correctness failed.")

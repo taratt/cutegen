@@ -1,0 +1,463 @@
+TITLE: CuTe Layout Algebra
+
+CuTe Layout Algebra
+
+CuTe provides an “algebra of Layouts” to support combining layouts in different ways. This algebra includes operations such as
+
+- Layout functional composition,
+- a notion of Layout “product” to reproduce one layout according to another, and
+- a notion of Layout “divide” to split one layout according to another.
+
+Common utilities for building complicated layouts from simpler ones depend on the Layout product. Common utilities for partitioning layouts (of data, for example) across other layouts (of threads, for example) depend on the Layout divide. All of these utilities rely on the functional composition of Layouts.
+
+In this section, we’ll build up the tools of the Layout algebra and explain some of these core operations in detail.
+
+
+Coalesce
+
+In the previous section, we summarized Layouts with
+
+Layouts are functions from integers to integers.
+
+The coalesce operation is a “simplify” on functions from integers to integers. If we only care about input integers, then we can manipulate the shape and number of modes of the Layout without changing it as a function. The only thing coalesce can’t change is the Layout’s size.
+
+More specifically, you can find the checked post-conditions in the coalesce unit test, which we’ll reproduce here:
+
+// @post size(@a result) == size(@a layout)
+// @post depth(@a result) <= 1
+// @post for all i, 0 <= i < size(@a layout), @a result(i) == @a layout(i)
+Layout coalesce(Layout const& layout)
+
+For example,
+
+auto layout = Layout<Shape <_2,Shape <_1,_6>>,
+                     Stride<_1,Stride<_6,_2>>>{};
+auto result = coalesce(layout);    // _12:_1
+
+where we can see the result has fewer modes and is “simpler.” Indeed, this could save us a few operations in the coordinate mapping and index mapping (if those are performed dynamically).
+
+So, how do we get there?
+
+We’ve already seen that column-major Layouts like (_2,_4):(_1,_2) act identically to _8:_1 for 1-D coordinates.
+
+Modes with size static-1 will always produce a natural coordinate of static-0. They can be ignored no matter the stride.
+
+Generalizing, consider a layout with just two integral modes, s0:d0 and s1:d1. Denote the result of coalescing this layout as s0:d0 ++ s1:d1. Then, there are four cases:
+
+s0:d0  ++  _1:d1  =>  s0:d0. Ignore modes with size static-1.
+
+_1:d0  ++  s1:d1  =>  s1:d1. Ignore modes with size static-1.
+
+s0:d0  ++  s1:s0*d0  =>  s0*s1:d0. If the second mode’s stride is the product of the first mode’s size and stride, then they can be combined.
+
+s0:d0  ++  s1:d1  =>  (s0,s1):(d0,d1). Else, nothing can be done and they must be treated separately.
+
+That’s it! We can flatten any layout and apply the above binary operation to each pair of adjacent modes in order to “coalesce” the modes of the layout.
+
+
+By-mode Coalesce
+
+Obviously, sometimes we do care about the shape of our Layout, but would still like to coalesce. For example, I have a 2-D Layout and I would like the result to remain 2-D.
+
+For this reason, there’s an overload of coalesce that takes an additional parameter
+
+// Apply coalesce at the terminals of trg_profile
+Layout coalesce(Layout const& layout, IntTuple const& trg_profile)
+
+which can be used as follows
+
+auto a = Layout<Shape <_2,Shape <_1,_6>>,
+                Stride<_1,Stride<_6,_2>>>{};
+auto result = coalesce(a, Step<_1,_1>{});   // (_2,_6):(_1,_2)
+
+// Identical to
+auto same_r = make_layout(coalesce(layout<0>(a)),
+                          coalesce(layout<1>(a)));
+
+This function is recursing into Step<_1,_1>{} and applying coalesce to the corresponding sublayout whenever it sees an integer (the values don’t matter, they’re just flags) rather than a tuple.
+
+This theme of defining an operation that treats a Layout as a “1-D” function from integers to integers and then generalizing to use it for an arbitrarily shaped layout will be a common one!
+
+
+Composition
+
+Functional composition of Layouts is the core of CuTe and is used in just about every higher-level operation.
+
+Starting again from the observation that Layouts are just functions from integers to integers, we can define functional composition that results in another Layout. First, an example.
+
+Functional composition, R := A o B
+R(c) := (A o B)(c) := A(B(c))
+
+Example
+
+A = (6,2):(8,2)
+B = (4,3):(3,1)
+
+R( 0) = A(B( 0)) = A(B(0,0)) = A( 0) = A(0,0) =  0
+R( 1) = A(B( 1)) = A(B(1,0)) = A( 3) = A(3,0) = 24
+R( 2) = A(B( 2)) = A(B(2,0)) = A( 6) = A(0,1) =  2
+R( 3) = A(B( 3)) = A(B(3,0)) = A( 9) = A(3,1) = 26
+R( 4) = A(B( 4)) = A(B(0,1)) = A( 1) = A(1,0) =  8
+R( 5) = A(B( 5)) = A(B(1,1)) = A( 4) = A(4,0) = 32
+R( 6) = A(B( 6)) = A(B(2,1)) = A( 7) = A(1,1) = 10
+R( 7) = A(B( 7)) = A(B(3,1)) = A(10) = A(4,1) = 34
+R( 8) = A(B( 8)) = A(B(0,2)) = A( 2) = A(2,0) = 16
+R( 9) = A(B( 9)) = A(B(1,2)) = A( 5) = A(5,0) = 40
+R(10) = A(B(10)) = A(B(2,2)) = A( 8) = A(2,1) = 18
+R(11) = A(B(11)) = A(B(3,2)) = A(11) = A(5,1) = 42
+
+The absolutely amazing observation is that the function R(c) = k defined above can be written down as another Layout
+
+R = ((2,2),3):((24,2),8)
+
+AND
+
+compatible(B, R)
+
+That is, every coordinate of B can also be used as a coordinate of R. This is an expected property of functional composition because B defines the domain of R.
+
+You can find many examples and checked post-conditions in the composition unit test. The post-conditions are precisely as we just stated.
+
+// @post compatible(@a layout_b, @a result)
+// @post for all i, 0 <= i < size(@a layout_b), @a result(i) == @a layout_a(@a layout_b(i)))
+Layout composition(LayoutA const& layout_a, LayoutB const& layout_b)
+
+
+Computing Composition
+
+First, a few observations:
+
+B = (B_0, B_1, ...). A layout can be expressed as the concatenation of its sublayouts.
+
+A o B = A o (B_0, B_1, ...) = (A o B_0, A o B_1, ...). When B is injective, composition is left-distributive with concatenation.
+
+With the above, we can assume without loss of generality that B = s:d is a layout with integral shape and stride. We can also assume that A is a flattened, coalesced layout.
+
+When A is integral, A = a:b, the result is rather trivial: R = A o B = a:b o s:d = s:(b*d). Here, the result of the composition R are the first s elements of A strided by d.
+
+When A is multimodal, we need to be more careful. Put into words, A o B = A o s:d, for integral s and d means that we want to:
+
+Determine a layout that produces every dth element of A.
+
+The shape of this intermediate layout can be calculated by progressively “dividing out” the first d elements from the shape of A starting from the left.
+
+For example,
+
+(6,2) /  2 => (3,2)
+
+(6,2) /  3 => (2,2)
+
+(6,2) /  6 => (1,2)
+
+(6,2) / 12 => (1,1)
+
+(3,6,2,8) /  3 => (1,6,2,8)
+
+(3,6,2,8) /  6 => (1,3,2,8)
+
+(3,6,2,8) /  9 => (1,2,2,8)
+
+(3,6,2,8) / 72 => (1,1,1,4)
+
+To compute the strides of the strided layout, the residues of the above operation are used to scale the strides of A. For instance, the last example (3,6,2,8):(w,x,y,z) / 72 with strides (w,x,y,z) produces (72*w,24*x,4*x,2*z) as the strides of the strided layout.
+
+As you may have noticed, we can only divide shapes by certain values and get a sensible result. This is called the stride divisibility condition and is statically checked in CuTe when possible.
+
+Keep the first s elements of the newly strided A so that the result has a compatible shape with B. This can be computed by “modding out” the first s elements from the shape of A starting from the left.
+
+For example,
+
+(6,2) %  2 => (2,1)
+
+(6,2) %  3 => (3,1)
+
+(6,2) %  6 => (6,1)
+
+(6,2) % 12 => (6,2)
+
+(3,6,2,8) %  6 => (3,2,1,1)
+
+(3,6,2,8) %  9 => (3,3,1,1)
+
+(1,2,2,8) %  2 => (1,2,1,1)
+
+(1,2,2,8) % 16 => (1,2,2,4)
+
+This operation causes the result to have a shape that is compatible with B.
+
+Again, this operation must satisfy a shape divisibility condition to yield a sensible result and is statically checked in CuTe when possible.
+
+From the above examples, we can construct the composition (3,6,2,8):(w,x,y,z) o 16:9 = (1,2,2,4):(9*w,3*x,y,z).
+
+
+Example 1 – Worked Example of Calculating a Composition
+
+We provide a more complex example of composition, where both operand layouts are multi-modal to illustrate the concepts introduced above.
+
+Functional composition, R := A o B
+R(c) := (A o B)(c) := A(B(c))
+
+Example
+
+A = (6,2):(8,2)
+B = (4,3):(3,1)
+
+1. Using the left-distributive and concatenation properties for layouts we write the composition as,
+
+R = A o B
+  = (6,2):(8,2) o (4,3):(3,1)
+  = ((6,2):(8,2) o 4:3, (6,2):(8,2) o 3:1)
+
+---
+1. Compute `(6,2):(8,2) o 4:3`
+
+- First, we compute the strided layout,
+
+:(8,2) / 3 = (6/3,2):(8*3,2) = (2,2):(24,2)
+
+- Next, we keep the shape compatible,
+
+:(24,2) % 4 = (2,2):(24,2)
+
+---
+2. Compute `(6,2):(8,2) o 3:1`
+
+- First, we compute the strided layout
+
+:(8,2) / 1 = (6,2):(8,2)
+
+- Next, we keep the shape compatible,
+
+:(8,2) % 3 = (3,1):(8,2)
+
+---
+
+Putting this together and coalescing each mode, we obtain the result
+
+R = A o B
+  = ((2, 2), 3): ((24, 2), 8)
+
+
+Example 2 – Reshape a layout into a matrix
+
+20:2  o  (5,4):(4,1). Composition formulation.
+
+This describes interpreting the layout 20:2 as a 5x4 matrix in a row-major order.
+
+= 20:2 o (5:4,4:1). Layout (5,4):(4,1) as concatenation of sublayouts.
+
+= (20:2 o 5:4, 20:2 o 4:1). Left distributivity.
+
+20:2 o 5:4  =>  5:8. Trivial case.
+
+20:2 o 4:1  =>  4:2. Trivial case.
+
+= (5:8, 4:2). Composed Layout as concatenation of sublayouts.
+
+= (5,4):(8,2). Final composed layout.
+
+
+Example 3 – Reshape a layout into a matrix
+
+(10,2):(16,4)  o  (5,4):(1,5)
+
+This describes interpreting the layout (10,2):(16,4) as a 5x4 matrix in a column-major order.
+
+= (10,2):(16,4) o (5:1,4:5). Layout (5,4):(1,5) as concatenation of sublayouts.
+
+= ((10,2):(16,4) o 5:1, (10,2):(16,4) o 4:5). Left distributivity.
+
+(10,2):(16,4) o 5:1 => (5,1):(16,4). Mod out the shape 5.
+
+(10,2):(16,4) o 4:5 => (2,2):(80,4). Div out the stride 5.
+
+= ((5,1):(16,4), (2,2):(80,4)). Composed Layout as concatenation of sublayouts.
+
+= (5:16, (2,2):(80,4)). By-mode coalesce.
+
+= (5,(2,2))):(16,(80,4)). Final composed layout.
+
+We get exactly this result with CuTe if we use compile-time shapes and strides. The following C++ code prints (_5,(_2,_2)):(_16,(_80,_4)).
+
+Layout a = make_layout(make_shape (Int<10>{}, Int<2>{}),
+                       make_stride(Int<16>{}, Int<4>{}));
+Layout b = make_layout(make_shape (Int< 5>{}, Int<4>{}),
+                       make_stride(Int< 1>{}, Int<5>{}));
+Layout c = composition(a, b);
+print(c);
+
+If we use dynamic integers, the following C++ code prints ((5,1),(2,2)):((16,4),(80,4)).
+
+Layout a = make_layout(make_shape (10, 2),
+                       make_stride(16, 4));
+Layout b = make_layout(make_shape ( 5, 4),
+                       make_stride( 1, 5));
+Layout c = composition(a, b);
+print(c);
+
+The results may look different but are the mathematically the same. The 1s in the shape don’t affect the layout as a mathematical function from 1-D coordinates to integers or as a function from 2-D coordinates to integers. In the dynamic case, CuTe can not coalesce the dynamic size-1 modes to “simplify” the layout due to the static rank and type of the tuples containing them.
+
+
+By-mode Composition
+
+Similar to by-mode coalesce and building up to a generic tiling operation, sometimes we do care about the shape of the A layout and would still like to apply composition to individual modes. For example, I have a 2-D Layout and would like some sublayout of the elements down the columns and another sublayout of elements across the rows.
+
+For this reason, composition also works when its second parameter – the B – is a Tiler. In general, a tiler is a layout or a tuple-of-layouts (note the generalization on IntTuple), which can be used as follows
+
+// (12,(4,8)):(59,(13,1))
+auto a = make_layout(make_shape (12,make_shape ( 4,8)),
+                     make_stride(59,make_stride(13,1)));
+// <3:4, 8:2>
+auto tiler = make_tile(Layout<_3,_4>{},  // Apply 3:4 to mode-0
+                       Layout<_8,_2>{}); // Apply 8:2 to mode-1
+
+// (_3,(2,4)):(236,(26,1))
+auto result = composition(a, tiler);
+
+// Identical to
+auto same_r = make_layout(composition(layout<0>(a), get<0>(tiler)),
+                          composition(layout<1>(a), get<1>(tiler)));
+
+We often use the <LayoutA, LayoutB, ...> notation to distinguish Tilers from the concatenation-of-sublayouts notation (LayoutA, LayoutB, ...) that we used previously.
+
+The result in the above code can be depicted as the 3x8 sublayout of the original layout
+
+For convenience, CuTe also interprets Shapes as a tiler as well. A Shape is interpreted as tuple-of-layouts-with-stride-1:
+
+// (12,(4,8)):(59,(13,1))
+auto a = make_layout(make_shape (12,make_shape ( 4,8)),
+                     make_stride(59,make_stride(13,1)));
+// (3, 8)
+auto tiler = make_shape(Int<3>{}, Int<8>{});
+
+// Equivalent to <3:1, 8:1>
+// auto tiler = make_tile(Layout<_3,_1>{},  // Apply 3:1 to mode-0
+//                        Layout<_8,_1>{}); // Apply 8:1 to mode-1
+
+// (_3,(4,2)):(59,(13,1))
+auto result = composition(a, tiler);
+
+where result can be depicted as the 3x8 sublayout of the original layout
+
+
+Composition Tilers
+
+In summary, a Tiler is one of the following objects.
+
+- A Layout.
+- A tuple of Tilers.
+- A Shape, which will be interpreted as a tiler of Layouts with stride-1.
+
+Any of the above can be used as the second argument in composition. With (1), we think of the composition as between two functions from integers to integers, no matter the ranks of the layouts. With (2) and (3), the composition is performed on each pair of corresponding modes of A and B, until case (1) is found.
+
+This allows composition to be applied by-mode to retrieve arbitrary sublayouts of specified modes of a tensor (“Give me the 3x5x8 subblock of this MxNxL tensor”) but also allows entire tiles of data to be reshaped and reordered as if they were 1-D vectors (“Reorder this 8x16 block of data into a 32x4 block using this weird order of elements”). We will see the by-mode cases appear often when we are tiling for threadblocks in examples that follow. We will see 1-D reshaping and reordering when we want to apply arbitrary partitioning patterns for threads and values in MMAs in examples that follow.
+
+
+Complement
+
+Before getting to “product” and “divide,” we need one more operation. We can think of composition as a layout B that is “selecting” certain coordinates from another layout A. But what about the coordinates that aren’t “selected”? To implement generic tiling, we want to be able to select arbitrary elements – the tile – and to describe the layout of those tiles – the leftovers, or the “rest.”
+
+The complement of a layout attempts to find another layout that represents the “rest” – the elements that aren’t touched by the layout.
+
+You can find many examples and checked post-conditions in the complement unit test. The post-conditions include
+
+// @post cosize(make_layout(@a layout_a, @a result))) >= size(@a cotarget)
+// @post cosize(@a result) >= round_up(size(@a cotarget), cosize(@a layout_a))
+// @post for all i, 1 <= i < size(@a result),
+//         @a result(i-1) < @a result(i)
+// @post for all i, 1 <= i < size(@a result),
+//         for all j, 0 <= j < size(@a layout_a),
+//           @a result(i) != @a layout_a(j)
+Layout complement(LayoutA const& layout_a, Shape const& cotarget)
+
+That is, the complement R of a layout A with respect to a Shape (IntTuple) M satisfies the following properties.
+
+- The size (and cosize) of R is bounded by size(M).
+- R is ordered. That is, the strides of R are positive and increasing. This means that R is unique.
+- A and R have disjoint codomains. R attempts to “complete” the codomain of A.
+
+The cotarget parameter above is most commonly an integer – you can see we only use size(cotarget) above. However, sometimes it is useful to specify an integer that has static properties. For example, 28 is a dynamic integer and (_4,7) is a shape with size 28 that is statically known to be divisible by _4. Both will produce the same complement mathematically, but the extra information can used by complement to preserve the staticness of the result as much as possible.
+
+
+Complement Examples
+
+complement is most effective on static shapes and strides, so consider all integers below to be static. Similar examples for dynamic shapes and strides as well as IntTuple cotarget can be found in the unit test.
+
+complement(4:1, 24) is 6:4. Note that (4,6):(1,4) has cosize 24. The layout 4:1 is effectively repeated 6 times with 6:4.
+
+complement(6:4, 24) is 4:1. Note that (6,4):(4,1) has cosize 24. The “hole” in 6:4 is filled with 4:1.
+
+complement((4,6):(1,4), 24) is 1:0. Nothing needs to be appended.
+
+complement(4:2, 24) is (2,3):(1,8). Note that (4,(2,3)):(2,(1,8)) has cosize 24. The “hole” in 4:2 is filled with 2:1 first, then everything is repeated 3 times with 3:8.
+
+complement((2,4):(1,6), 24) is 3:2. Note that ((2,4),3):((1,6),2) has cosize 24 and produces unique indices.
+
+complement((2,2):(1,6), 24) is (3,2):(2,12). Note that ((2,2),(3,2)):((1,6),(2,12)) has cosize 24 and produces unique indices.
+
+
+Product (Tiling)
+
+Finally, we can define the product of a Layout by another Layout. In this section, we’ll define logical_product(Layout, Layout), which again considers all Layouts as 1-D functions from integers to integers, and then use that definition to create multidimensional Layout products.
+
+Informally, logical_product(A, B) results in a two mode layout where the first mode is the layout A and the second mode is the layout B but with each element replaced by a “unique replication” of layout A.
+
+Formally, this can be written as
+
+$A \otimes B := (A, A^* \circ B)$
+
+and implemented in CuTe as
+
+template <class LShape, class LStride,
+          class TShape, class TStride>
+auto logical_product(Layout<LShape,LStride> const& layout,
+                     Layout<TShape,TStride> const& tiler)
+{
+  return make_layout(layout, composition(complement(layout, size(layout)*cosize(tiler)), tiler));
+}
+
+Note that this is defined only in terms of concatenation, composition, and complement.
+
+So what is that?
+
+where the first mode is the layout A
+
+This is clearly just a copy of A.
+
+the second mode is the layout B but with each element replaced by a “unique replication” of layout A.
+
+The “unique replication” of layout A sounds like complement, A*, up to the cosize of B. As we’ve seen in the complement section, this can be described as the “layout of the repetition of A”. If A is the “tile”, then A* is the layout of repetitions that are available for B.
+
+
+Logical Product 1-D Example
+
+Consider reproducing the 1-D layout A = (2,2):(4,1) according to B = 6:1. Informally, this means that we have a 1-D layout of 4 elements defined by A and we want to reproduce it 6 times.
+
+This is computed in the three steps described in the implementation above.
+
+Complement of A = (2,2):(4,1) under 6*4 = 24 is A* = (2,3):(2,8).
+
+Composition of A* = (2,3):(2,8) with B = 6:1 is then (2,3):(2,8).
+
+Concatenation of (A,A* o B) = ((2,2),(2,3)):((4,1),(2,8)).
+
+After the product, the first mode of the result is the tile of data and the second mode of the result iterates over each tile.
+
+Of course, we can change the number and order of the tiles in the product by changing B.
+
+
+Blocked and Raked Products
+
+The blocked_product(LayoutA, LayoutB) and raked_product(LayoutA, LayoutB) are rank-sensitive transformations on top of 1-D logical_product that let us express the more intuitive Layout products that we most often want to express.
+
+A key observation in the implementation of these functions are the compatibility post-conditions of logical_product:
+
+// @post rank(result) == 2
+// @post compatible(layout_a, layout<0>(result))
+// @post compatible(layout_b, layout<1>(result))
+
+Because A is always compatible with mode-0 of the result and B is always compatible with mode-1 of the result, if we made A and B the same rank then we could “reassociate” like-modes after the product. That is, the “column” mode in A could be combined with the “column” mode in B and the “row” mode in A could be combined with the “row” mode in B, etc.
+
+This is exactly what blocked_product and raked_product do and it is why they are called rank-sensitive. Unlike other CuTe functions that take Layout arguments, these care about the top-level rank of the arguments so that each mode can be reassociated after the logical_product.
+
+Similarly, raked_product combines the modes slightly differently. Instead of the resulting “column” mode being constructed from the A “column” mode then the B “column” mode, the resulting “column” mode is constructed from the B “column” mode then the A “column” mode.

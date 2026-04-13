@@ -1,0 +1,253 @@
+TITLE: CuTe’s support for Matrix Multiply-Accumulate instructions
+
+CuTe’s support for Matrix Multiply-Accumulate instructions
+
+In this file, we explain in detail how we support our GPUs’ Matrix Multiply-Accumulate (MMA) hardware instructions in CuTe.
+
+MMAs are architecture-specific. Different generations of GPU architectures introduce different sets of MMA instructions. However, CuTe features such as Layout makes it possible to expose MMAs for use in generic CUDA C++ code. We accomplish this in multiple steps.
+
+We wrap each MMA’s PTX instruction in an “Operation” struct.
+
+For each Operation struct, we define a “Traits” struct that defines all of the meta-information needed to use the Operation.
+
+Combining the above, an “Atom” is the combination of the PTX Operation struct with the meta-information Traits struct and provides methods to construct cute::Tensor “fragments” for that Operation and to use that Operation on existing cute::Tensors.
+
+Combining potentially multiple Atoms, a “TiledMMA” provides utilities for building more complex partitioning patterns by creating layouts and interleavings of Atoms.
+
+
+CuTe MMA Atoms
+
+CuTe exposes each MMA to generic CUDA C++ code as a pair of structs: an “Operation” struct, and an MMA_Traits struct templated on the Operation struct type.
+
+An “Operation” struct exposes the PTX instruction for that specific operation. It defines the arguments and interface it expects. Operation structs have minimal software dependencies – they do not use layouts, tensors, or non-standard numeric data types – and describe only the physical inputs and outputs to the instruction. Different structs have different names that describe what the MMA instruction does. We will explain the naming scheme below.
+
+A corresponding MMA_Traits struct specialization defines meta-information about the Operation, such as the logical compute types, the logical shape of the operation, and the Layouts of threads and values within the operation. The MMA_Traits struct takes the Operation as a template parameter. CuTe specializes MMA_Traits for each Operation type that it supports.
+
+Together, these two types comprise an “Atom” that decouples the complexity of thread and data layouts from the call site of the PTX instruction. The Atom’s Traits struct exposes information that is relevant to a single MMA operation, no matter the granularity at which it operates.
+
+CuTe MMA atoms expose the semantics of a single MMA operation. This is true regardless of the hardware level at which the MMA operates. CuTe supports MMA atoms that operate at a variety of hardware levels, including
+
+a single thread (e.g., fused multiply-add (FMA) instruction);
+
+a quadpair (Volta);
+
+a single warp (Ampere); and
+
+a warpgroup (Hopper).
+
+
+Operation structs
+
+Location of files
+
+CuTe provides its Operations structs in the include/cute/arch directory, in header files starting with mma.
+
+
+Operation struct’s name
+
+A CuTe Operation struct’s name principally encodes the PTX instruction it wraps. These often include
+
+its first supported architecture,
+
+the M, N, and K dimensions that it accepts,
+
+the types that it takes, and
+
+the arrangement of the A and B inputs.
+
+For example, the Volta section below will refer to the SM70_8x8x4_F32F16F16F32_NT Operation struct defined in include/cute/arch/mma_sm70.hpp.
+
+“SM70” refers to Volta.
+
+“8x8x4” refers to M = 8, N = 8, and K = 4, the dimensions of the MMA operation that the quadpair performs. This is reflected in the PTX as .m8n8k4..
+
+“F32F16F16F32” refers to the element types of the four matrix operands A, B, C, and D. An MMA computes D = C + A * B, so we read the types from left to right: D is F32 (float), A is F16 (half), B is F16 (half), and C is F32 (float). This is reflected in the PTX instruction name as .f32.f16.f16.f32.
+
+“NT” means that the PTX instruction is designed for inputs A as M-major (not transposed, column-major) and inputs B as N-major (transposed, row-major). This is reflected in the PTX instruction name as .col.row..
+
+
+Contents
+
+An Operation struct has the following members.
+
+
+Type aliases
+
+An Operation struct has four public type aliases: DRegisters, ARegisters, BRegisters, and CRegisters. For example, the SM70_8x8x4_F32F16F16F32_NT Operation struct defined in include/cute/arch/mma_sm70.hpp defines these as follows.
+
+using DRegisters = float[8];
+using ARegisters = uint32_t[2];
+using BRegisters = uint32_t[2];
+using CRegisters = float[8];
+
+This shows how many values each thread will pass into the PTX instruction for each of the matrices A, B, C, and D. For this Operation, each thread passes 8 F32 values each for C and D, and 4 F16 values each for A and B.
+
+
+fma static member device function
+
+An operation struct defines a public static void fma function. It is marked with the CUTE_HOST_DEVICE macro, which adds the __host__ __device__ annotations. Different Operations define fma to take different numbers of arguments, depending on the PTX MMA instruction. The implementation protects use of the PTX instruction with a macro, and raises an assert if fma is called when the macro is not defined. This ensures that tests and examples that use this Operation in an Atom can still compile, even if the PTX instruction is not available.
+
+
+Traits
+
+Location of files
+
+CuTe provides its Traits structs in the include/cute/atom directory, in header files starting with mma_traits.
+
+
+Contents
+
+An MMA_Traits specialization defines the following public type aliases.
+
+ValTypeD: Logical compute type of the D matrix
+
+ValTypeA: Logical compute type of the A matrix
+
+ValTypeB: Logical compute type of the B matrix
+
+ValTypeC: Logical compute type of the C matrix
+
+Shape_MNK: Logical MxNxK shape of the MMA operation
+
+ThrID: Logical thread mapping within the single MMA operation
+
+ALayout: Mapping of (thread,value) pairs to coordinates in the MxK A matrix
+
+BLayout: Mapping of (thread,value) pairs to coordinates in the NxK B matrix
+
+CLayout: Mapping of (thread,value) pairs to coordinates in the MxN C matrix
+
+
+Example
+
+The specialization of MMA_Traits for the SM70_8x8x4_F32F16F16F32_NT Operation lives in the header file include/cute/atom/mma_traits_sm70.hpp.
+
+template <>
+struct MMA_Traits<SM70_8x8x4_F32F16F16F32_NT>
+{
+  using ValTypeD = float;
+  using ValTypeA = half_t;
+  using ValTypeB = half_t;
+  using ValTypeC = float;
+
+  using Shape_MNK = Shape<_8,_8,_4>;
+  using ThrID   = SM70_QuadPair;
+  using ALayout = SM70_8x4_Col;
+  using BLayout = SM70_8x4_Col;
+  using CLayout = SM70_8x8_32b;
+}
+
+
+Volta
+
+Volta architecture implements an HMMA instruction where a group of 8 threads called a quadpair collaborate to share data and perform an 8x8x4 matrix multiply-accumulate.
+
+We first take a look at how we would take the ISA semantics of thread and data partitioning for the HMMA instruction, and encode it in a Traits struct.
+
+
+Types
+
+  using ValTypeD = float;
+  using ValTypeA = half_t;
+  using ValTypeB = half_t;
+  using ValTypeC = float;
+
+
+Shape
+
+  using Shape_MNK = Shape <_8,_8,_4>;
+
+
+Thread ID
+
+  using ThrID = Layout<Shape <_4, _2>,
+                       Stride<_1,_16>>;
+
+
+Accumulator Mapping
+
+We can start constructing a CLayout from the picture above. As with any CuTe layout, it is a pair of Shape and corresponding Stride.
+
+  using CLayout = Layout<Shape <Shape <_2, _2,_2>, Shape <_2,_2, _2>>,
+                         Stride<Stride<_1,_16,_4>, Stride<_8,_2,_32>>>;
+
+
+In the case of F16 accumulators, the layout is less complex.
+
+  using CLayout = Layout<Shape <_8,_8>,
+                         Stride<_1,_8>>;
+
+
+A and B Layout Mapping
+
+  using ALayout = Layout<Shape <_8,_4>,
+                         Stride<_1,_8>>;
+
+  using BLayout = Layout<Shape <_8,_4>,
+                         Stride<_1,_8>>;
+
+
+Hopper
+
+Now, we are ready to take a look at the much larger GMMA operation first introduced with Hopper architecture. These MMA instructions operate at the granularity of 128 threads, collectively referred to as a warpgroup.
+
+
+Thread ID
+
+using ThrID = Layout<_128, _1>;
+
+
+Accumulator Mapping
+
+  using CLayout = Layout<Shape <Shape <  _4, _8,  _4>, Shape < _2, _2>>,
+                         Stride<Stride<_128, _1, _16>, Stride<_64, _8>>>;
+
+
+For larger variants:
+
+  using CLayout = Layout<Shape <Shape <  _4, _8,  _4>, Shape < _2, _2,  _16>>,
+                         Stride<Stride<_128, _1, _16>, Stride<_64, _8, _512>>>;
+
+
+A and B Layout Mapping
+
+  using ALayout = Layout<Shape <_128, Shape <_64,_16>>,
+                         Stride<  _0, Stride< _1,_64>>>;
+
+
+TiledMMAs
+
+We can make more complex patterns by combining and interleaving multiple atoms.
+
+MMA_Atom mma = MMA_Atom<SM70_8x8x4_F32F16F16F32_NT>{};
+print_latex(mma);
+
+Equivalent construction:
+
+TiledMMA mma = make_tiled_mma(
+    SM70_8x8x4_F32F16F16F32_NT{},
+    Layout<Shape<_1,_1,_1>>{},
+    Tile<_8,_8,_4>{}
+);
+
+We can create larger tiled operations:
+
+TiledMMA mma = make_tiled_mma(
+    SM70_8x8x4_F32F16F16F32_NT{},
+    Layout<Shape <_2,_2>,
+           Stride<_2,_1>>{}
+);
+
+And expand further:
+
+TiledMMA mma = make_tiled_mma(
+    SM70_8x8x4_F32F16F16F32_NT{},
+    Layout<Shape <_2,_2>,
+           Stride<_2,_1>>{},
+    Tile<_32,_32,_4>{}
+);
+
+Permutations of modes are also supported using Layout transformations.
+
+
+To see how these TiledMMAs are used to partition data tensors, see the 0x_gemm_tutorial.md.

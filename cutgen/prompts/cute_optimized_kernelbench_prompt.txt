@@ -62,10 +62,10 @@ Rules for elementwise kernels:
 - It is acceptable to specialize to the exact dtype and contiguous layout if the original code already assumes it.
 
 ===========================================================
-===========================================================
 If the kernel is (C) Convolution kernel:
 
-Pick ONE of the following effective optimizations (only one):
+Pick ONE of the following effective optimizations (only one),
+UNLESS the kernel is still structurally direct (see below).
 
 1) Output / spatial tiling (CTA-level tiling over output height/width)
 2) Shared-memory staging of input tiles
@@ -78,127 +78,142 @@ Pick ONE of the following effective optimizations (only one):
 9) Tensor Core MMA usage (ONLY if data layout and sizes allow it)
 10) Improve global memory coalescing and reuse
 
-Rules for convolution:
-
-- Convolution performance is dominated by data reuse, not arithmetic.
-- Nearby output elements reuse the same input and filter data.
-- Threads should cooperate on tiles whenever reuse exists.
-
-The strongest optimizations for convolution are:
-
-- output tiling
-- shared-memory staging
-- register reuse
-- cooperative thread execution
-
-Prefer these before any micro-optimizations.
 
 -----------------------------------------------------------
 IMPORTANT PERFORMANCE PRINCIPLE
 
-If the kernel has:
+Convolution performance is dominated by data reuse, not arithmetic.
 
-- nested loops over channels and kernel elements
-- one thread computing one output
-- repeated global memory loads
-- no shared-memory staging
-- no cooperative tiling
-
-Then the kernel is still a direct convolution implementation.
-
-Direct convolution is usually very slow.
-
-Your goal is to transform the kernel into a tiled implementation.
+Nearby output elements reuse the same input and filter data.
+Threads should cooperate on tiles whenever reuse exists.
 
 -----------------------------------------------------------
-When to use each optimization
+STRUCTURAL DIRECT-KERNEL CHECK
 
-Output / spatial tiling:
+Before selecting an optimization, first determine whether the current
+kernel is still a direct convolution implementation.
 
-Use when:
+Treat the kernel as still structurally direct if ANY of the following hold:
 
-- output spatial dimensions are large
-- neighboring outputs reuse input data
+- one thread computes one output (or a very small number of outputs)
+  by looping over all input channels and kernel elements
 
-This is the most common and most effective first optimization.
+- the main accumulation still uses nested scalar loops over
+  channel and kernel dimensions
 
------------------------------------------------------------
+- neighboring outputs repeatedly fetch reusable input activations
+  independently from global memory inside the inner loop
 
-Shared-memory staging:
+- shared memory is used only for one operand while the overall
+  computation still performs repeated global-memory gathers
 
-Use when:
+- CuTe is used mainly for indexing convenience rather than
+  cooperative tiled partitioning
 
-- multiple threads reuse the same input or filter data
-- the same input patch is used by nearby outputs
+- runtime remains very high despite local optimizations
 
-This is one of the highest-impact optimizations for convolution.
 
------------------------------------------------------------
+If the kernel is still structurally direct:
 
-Register blocking:
+DO NOT apply a micro-optimization.
 
-Use when:
+Instead, perform ONE structural rewrite phase whose goal is to
+eliminate the direct form.
 
-- each thread can compute multiple outputs
-- reuse exists within the thread
-
------------------------------------------------------------
-
-CuTe partitioning:
-
-Use when:
-
-- threads can cooperate on tiles
-- the kernel already uses CuTe tensors
-- a clear tile structure exists
-
-Do NOT use CuTe only as an indexing wrapper.
 
 -----------------------------------------------------------
+STRUCTURAL REWRITE GOAL
 
-Implicit GEMM restructuring:
+A structural rewrite should move the kernel toward a cooperative,
+tiled implementation.
 
-Use when:
+Valid structural rewrite directions include:
 
-- convolution resembles matrix multiplication
-- reduction dimension is large
-- tensor shapes are regular
+- introducing CTA-level output tiling
+- staging reusable input tiles into shared memory
+- cooperative thread computation across tiles
+- real CuTe tiled tensor partitioning
+- implicit GEMM restructuring when appropriate
 
------------------------------------------------------------
+The rewrite should primarily improve data reuse and cooperative
+execution rather than arithmetic simplification.
 
-Memory access optimization:
-
-Use when:
-
-- loads are strided
-- memory accesses are not coalesced
-- reuse is already implemented
-
-Do NOT choose this if tiling or staging is missing.
 
 -----------------------------------------------------------
-Optimization priority order
+WHEN TO APPLY NORMAL OPTIMIZATIONS
+
+If the kernel is already tiled and cooperative
+(i.e., NOT structurally direct):
+
+Then implement exactly ONE optimization attempt
+from the list above.
+
+
+-----------------------------------------------------------
+OPTIMIZATION PRIORITY ORDER
 
 When the kernel is slow, prefer optimizations in this order:
 
 1) Output / spatial tiling
-2) Shared-memory staging
-3) Register blocking
-4) Cooperative thread execution
+2) Shared-memory staging of reusable data
+3) Cooperative thread execution
+4) Register blocking
 5) Memory access optimization
 6) Indexing cleanup
 
-Avoid starting with:
+Avoid starting with small local optimizations.
 
-- vectorization
-- bounds hoisting
-- arithmetic simplification
-- small loop optimizations
-
-These rarely produce large speedups for convolution.
 
 -----------------------------------------------------------
-CuTe-specific rules
+DO NOT WASTE THE OPTIMIZATION ATTEMPT
+
+Do NOT spend the optimization attempt on the following
+if the kernel is still structurally direct:
+
+- cp.async or double-buffering alone
+- __ldg or cache hints
+- vectorized loads/stores
+- bounds-check cleanup
+- arithmetic simplification
+- register blocking alone
+- staging only filters while input reuse remains poor
+
+These changes rarely produce large speedups
+when the kernel structure is still direct.
+
+
+-----------------------------------------------------------
+OPERAND REUSE ANALYSIS
+
+For convolution kernels, explicitly identify the dominant
+reuse source before selecting the optimization:
+
+- input activations
+- filters
+- both
+
+The chosen optimization must target the dominant reuse bottleneck.
+
+Do not stage only filters if neighboring outputs heavily reuse
+input activations.
+
+
+-----------------------------------------------------------
+IMPLICIT GEMM ESCAPE RULE
+
+If the kernel remains structurally direct after one optimization
+round, prefer a cooperative tiled rewrite or implicit GEMM
+restructuring rather than continuing to refine the direct form.
+
+This is especially important for:
+
+- transposed convolution
+- large spatial outputs
+- large channel reductions
+
+
+-----------------------------------------------------------
+CuTe-SPECIFIC RULES
 
 Use CuTe to:
 
@@ -213,18 +228,18 @@ Do NOT use CuTe only for:
 - scalar loops
 - cosmetic structure
 
+
 -----------------------------------------------------------
-Hard rules
+HARD RULES
 
 - Preserve exact convolution semantics
 - Preserve stride / padding / dilation / groups behavior
 - Do NOT change precision
 - Do NOT use cuBLAS or cuDNN
 - Do NOT fall back to PyTorch operators
-- Implement exactly ONE optimization attempt
+- Implement exactly ONE optimization phase
 - Prefer structural reuse over local micro-optimizations
-
-
+===========================================================
 If the kernel is (D) Other / unclear:
 Apply ONE safe general GPU optimization:
 - vectorized load/store OR

@@ -1,0 +1,227 @@
+TITLE: Predication — What to do when tiling isn’t perfect
+
+Predication: What to do when tiling isn’t perfect
+
+The GEMM tutorial shows how we compute a matrix-matrix multiply by iterating over tiles of the input matrices and output matrix. The examples all assume that the tiles fit evenly into the matrices, with no remainder. What do we do if this is not the case? For example, we might want to tile a 41 x 55 matrix into 4 x 8 tiles, but 41 / 4 is 10 remainder 1, and 55 / 8 is 6 remainder 7. What do we do with those “leftover” parts of the matrix?
+
+To start, we note that logical_divide (CuTe’s way of tiling layouts) “rounds up.” For example, if N is the layout 1000:1 and B is the layout 128:1, then logical_divide(N, B) is the layout (128, 8):(1, 128). This effectively rounds up the original shape N = 1000 into an 128 x 8 matrix (as if N = 1024). What about those last 24 elements, that aren’t part of the original data? How is the last tile handled and how do we avoid indexing out-of-bounds?
+
+Like other introductions to CUDA programming, the idiomatic CuTe way to address these issues is through “predication.” Rather than attempting to reason about the “remainder tiles” by trying to represent “7 tiles of size-128 and 1 tile of size-104,” CuTe instead rounds up to “8 tiles of size-128” and constructs predicates so that the kernel only tries to access data in each tile that are valid within the matrix. This corresponds well with how our GPUs optimize: branches without warp divergence are relatively fast. It also matches the usual CUDA idiom when dividing N work items in 1-D fashion over B thread blocks: first test if “my thread” is out of bounds before doing work.
+
+
+Example: Generic vector tiling with predication
+
+Consider a generic tiling wherein a size-1000 vector is tiled into size-128 chunks. Then a predication tensor can be constructed as follows:
+
+Tensor gmem = ...     // e.g. size 1000
+Tensor smem = ...     // e.g. size 128
+
+// Tile the gmem for smem
+Tensor gmem_tiled = logical_divide(gmem, size(smem));      // e.g. (128,8)
+
+// Create an identity layout for gmem and tile it similarly
+Layout id_layout = make_layout(shape(gmem));               // e.g. 1000:1
+Layout id_tiled  = logical_divide(id_layout, size(smem));  // e.g. (128,8):(1,128)
+
+// Create a predicate tensor
+Tensor pred = make_tensor<bool>(shape(id_tiled));          // e.g. (128,8)
+
+for (int i = 0; i < size(pred); ++i) {
+  pred(i) = id_tiled(i) < size(id_layout);
+}
+
+
+// Note that gmem_tiled, id_tiled, and pred tensors are all congruent
+// For tile tile_i, determine if element value_j is in-bounds and copy to smem
+
+if (pred(value_j,tile_i)) {
+  smem(value_j) = gmem_tiled(value_j,tile_i);
+}
+
+
+General predication procedure
+
+The general procedure is that we
+
+1. create an identity layout with the same shape as our original data
+2. repeat the same tiling / partitioning / slicing on that identity layout
+3. create a predicate tensor by comparing coordinates with bounds
+4. use the predicate tensor to mask off out-of-bounds accesses
+
+
+Example: Predicating the GEMM epilogue
+
+Suppose that we’ve partitioned mC into CTA tiles and across threads of an MMA as follows.
+
+
+// CTA partitioning
+auto cta_coord = make_coord(blockIdx.x, blockIdx.y, _);
+Tensor gC = local_tile(mC, cta_tiler, cta_coord, Step<_1,_1, X>{});
+
+// Thread partitioning
+auto thr_mma = mma.get_slice(threadIdx.x);
+Tensor tCgC = thr_mma.partition_C(gC);
+Tensor tCrC = thr_mma.make_fragment_C(tCgC);
+
+
+// ... Compute gemms and accumulate into tCrC ...
+
+
+// axpby epilogue
+for (int i = 0; i < size(tCgC); ++i) {
+  tCgC(i) = alpha * tCrC(i) + beta * tCgC(i);
+}
+
+
+Then, following the predication procedure:
+
+
+// Coordinate tensor
+Tensor cC = make_identity_tensor(shape(mC));
+
+
+// Apply same partitioning steps
+
+Tensor cta_cC =
+    local_tile(cC, cta_tiler, cta_coord, Step<_1,_1, X>{});
+
+Tensor tCcC =
+    thr_mma.partition_C(cta_cC);
+
+
+// Predicated epilogue
+
+for (int i = 0; i < size(tCgC); ++i) {
+
+  if (elem_less(tCcC(i), shape(mC))) {
+
+    tCgC(i) =
+        alpha * tCrC(i) + beta * tCgC(i);
+
+  }
+}
+
+
+Advantages of the coordinate tensor approach
+
+- There is no dependence on the layout or strides of the tensor being predicated
+- Partitioning stages can be anything (CTA tiling, thread partitioning, TiledMMA, TiledCopy)
+- It naturally extends to any-dimensional predication
+- It generalizes the typical CUDA 1-D bounds check pattern
+
+
+Classic CUDA analogy
+
+int idx = blockDim.x * blockIdx.x + threadIdx.x;
+
+if (idx < N)
+  gmem_ptr[idx] = ...
+
+
+In a SIMT programming model, tensor extents should not be modified so that loops don’t overrun. Instead, predication queries the original coordinate and determines whether that coordinate overruns. This avoids variable loop bounds, preserves thread coherence, and maintains load balance.
+
+
+Example: m- and n-predication of A and B loads in GEMM
+
+
+CTA partitioning
+
+auto cta_coord = make_coord(blockIdx.x, blockIdx.y, _);
+
+Tensor gA =
+    local_tile(mA, cta_tiler, cta_coord, Step<_1, X,_1>{});
+
+Tensor gB =
+    local_tile(mB, cta_tiler, cta_coord, Step< X,_1,_1>{});
+
+
+Tensor sA =
+    make_tensor(make_smem_ptr(smemA), sA_layout);
+
+Tensor sB =
+    make_tensor(make_smem_ptr(smemB), sB_layout);
+
+
+Thread partitioning
+
+Tensor tAgA =
+    local_partition(gA, tA, thread_idx);
+
+Tensor tAsA =
+    local_partition(sA, tA, thread_idx);
+
+Tensor tBgB =
+    local_partition(gB, tB, thread_idx);
+
+Tensor tBsB =
+    local_partition(sB, tB, thread_idx);
+
+
+Create identity coordinate tensors
+
+Tensor cA =
+    make_identity_tensor(shape(mA));
+
+Tensor cB =
+    make_identity_tensor(shape(mB));
+
+
+Apply same partitioning
+
+Tensor cta_cA =
+    local_tile(cA, cta_tiler, cta_coord, Step<_1, X,_1>{});
+
+Tensor cta_cB =
+    local_tile(cB, cta_tiler, cta_coord, Step< X,_1,_1>{});
+
+
+Tensor tAcA =
+    local_partition(cta_cA, tA, thread_idx);
+
+Tensor tBcB =
+    local_partition(cta_cB, tB, thread_idx);
+
+
+Create predicate tensors
+
+Tensor tApA =
+    make_tensor<bool>(
+        make_shape(size<0>(tAcA), size<1>(tAcA)),
+        make_stride(Int<1>{}, Int<0>{})
+    );
+
+Tensor tBpB =
+    make_tensor<bool>(
+        make_shape(size<0>(tBcB), size<1>(tBcB)),
+        make_stride(Int<1>{}, Int<0>{})
+    );
+
+
+Populate predicates
+
+for (int m = 0; m < size<0>(tApA); ++m) {
+
+  tApA(m,0) =
+      elem_less(
+          get<0>(tAcA(m,0,0)),
+          shape<0>(mA)
+      );
+
+}
+
+for (int n = 0; n < size<0>(tBpB); ++n) {
+
+  tBpB(n,0) =
+      elem_less(
+          get<0>(tBcB(n,0,0)),
+          shape<0>(mB)
+      );
+
+}
+
+
+Use predicates in copy_if
+
+copy_if(tApA, tAgA(_,_,k_tile), tAsA);
+
+copy_if(tBpB, tBgB(_,_,k_tile), tBsB);

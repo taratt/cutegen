@@ -128,6 +128,42 @@ B) **Copy path correctness**
 4. Validate copy-only loop (gmem→smem→gmem) before looking at compute.
 5. If async is used, ensure required waits/barriers exist before first use.
 
+B.5) CuTe rank/projection API failures: fix the smallest semantic mismatch first
+### B.5) CuTe rank/projection API failures: fix the smallest semantic mismatch first
+
+If compilation fails with errors involving:
+
+- `parameter "X" is not a type name`
+- `Step<_1, X, ...>` / `Step<X, _1, ...>` not compiling
+- `local_tile(...)` / `local_partition(...)` overload mismatch
+- rank mismatch between tensor, tiler, coord, or projection
+- invalid type conversion from `make_gmem_ptr(nullptr)` or dummy tensors
+
+treat this as a CuTe API/rank-semantics bug, not a performance bug.
+
+Debug in this order:
+
+1. Verify tensor rank:
+   - if the tensor is 2D, use 2D tilers/coords/projections
+   - if the tensor is 3D, use 3D tilers/coords/projections
+   - do not mix a 3D CTA tiler with a 2D tensor unless the projection is explicitly valid
+
+2. Do not introduce new `Step<...>` forms unless the same form already exists and compiles in the current source.
+   - Some CuTe builds / contexts do not accept the projected form you are trying to use.
+   - Prefer simpler `local_tile(...)` / `local_partition(...)` calls first.
+
+3. Do not build dummy CuTe tensors from null global pointers just to infer fragment shapes.
+   - This often causes invalid pointer-type conversions and fragile code generation.
+   - Prefer deriving layout/shape from real tensors or from explicit layouts.
+
+4. If `local_partition(...)` fails, check logical role first:
+   - Is this tensor supposed to be A, B, or C?
+   - What rank and shape should the fragment have?
+   - Do not patch the call blindly until you can state the intended fragment shape.
+
+5. Apply one local fix only.
+   - Do not simultaneously change CTA tiling rank, thread layout, projection syntax, and operand layout.
+
 C) **Compute correctness**
 6. Validate partition shapes match expectations (especially K mapping for MMA).
 7. Verify accumulator dtype and any casting happens late enough.
@@ -243,12 +279,36 @@ Then prove all three levels are consistent:
      - smem write indices
      - partition direction / `Step<...>`
      - resulting fragment shape seen by `gemm(...)`
+6. **Implicit-GEMM conv bug hotspot: B is very often accidentally loaded as (N,K) instead of (K,N)**
 
-6. **Do not trust an epilogue-only fix**
+For implicit-GEMM convolution, the most common structural bug is:
+    - A is treated as (M,K)
+    - C is treated as (M,N)
+    - but B is accidentally loaded or partitioned as (N,K) somewhere in the pipeline
+
+    This can happen even if:
+    - the same values are present
+    - shared-memory allocation compiles
+    - some partition calls appear shape-compatible
+
+    Required check:
+    - state the shared-memory shape of B
+    - state the smem write order used to populate B
+    - state the fragment shape seen by `gemm(...)`
+
+    Do not claim the bug is fixed unless all three agree that B is logically `(K_tile, N_tile)`.
+
+    If B was changed, re-check:
+    - smem declaration
+    - smem indexing order
+    - local_partition / Step mapping
+    - resulting thread fragment role
+
+7. **Do not trust an epilogue-only fix**
    - If max error remains nontrivial after masking stores, the bug is likely in operand mapping or fragment semantics, not just in the ragged-edge store.
    - Edge masking can fix OOB corruption, but it cannot fix a wrong GEMM contraction.
 
-7. **Required proof before declaring success**
+8. **Required proof before declaring success**
    - Provide a short table or statement like:
      - `A tile in smem: (128,8) = (M_tile,K_tile)`
      - `B tile in smem: (8,128) = (K_tile,N_tile)`

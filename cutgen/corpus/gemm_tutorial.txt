@@ -1,0 +1,218 @@
+TITLE: CuTe dense matrix-matrix multiply tutorial
+
+CuTe dense matrix-matrix multiply tutorial
+
+In this section, we review these examples, which demonstrate a few self-contained, single-file dense matrix-matrix multiply implementations using only CuTe.
+
+
+sgemm_1.cu
+
+The simplest of the tutorial examples covers the basics of partitioning the global memory into tiles across the CTAs (also called threadblocks in CUDA), partitioning the data tiles across the threads of each CTA, and writing a mainloop using cute::copy and cute::gemm.
+
+
+High-level interface
+
+We’ll start with the kernel entry point gemm_device at the top of the file.
+
+template <class ProblemShape, class CtaTiler,
+          class TA, class AStride, class ASmemLayout, class AThreadLayout,
+          class TB, class BStride, class BSmemLayout, class BThreadLayout,
+          class TC, class CStride, class CSmemLayout, class CThreadLayout,
+          class Alpha, class Beta>
+__global__ static
+__launch_bounds__(decltype(size(CThreadLayout{}))::value)
+void
+gemm_device(ProblemShape shape_MNK, CtaTiler cta_tiler,
+            TA const* A, AStride dA, ASmemLayout sA_layout, AThreadLayout tA,
+            TB const* B, BStride dB, BSmemLayout sB_layout, BThreadLayout tB,
+            TC      * C, CStride dC, CSmemLayout          , CThreadLayout tC,
+            Alpha alpha, Beta beta)
+
+
+There are many template parameters, let’s quickly review them and then go into more depth on their uses.
+
+ProblemShape. The MxNxK problem shape of this matrix multiply.
+
+CtaTiler. A CuTe tiler concept that determines how to extract a tile of data from the problem shape.
+
+TA const* A, TB const* B, TC* C. The types and pointers to the A, B, and C data, respectively.
+
+AStride, BStride, CStride. The layout strides corresponding to the ProblemShape for each A, B, and C.
+
+ASmemLayout, BSmemLayout, CSmemLayout. The layouts, if needed, of shared memory to use for staging A-data, B-data, and C-data within each CTA.
+
+AThreadLayout, BThreadLayout, CThreadLayout. The layouts of threads to be used in partitioning each stage.
+
+Alpha alpha, Beta beta. The types and values of the scalar constants to compute GEMM: C = alpha * A * B + beta * C.
+
+
+The Full Tensors: Shapes, Strides, and Data
+
+Most GEMM interfaces list the matrices’ dimensions in the order M, N, K. CuTe also uses this convention, but packages them into a single IntTuple. In this example, they are dynamic values defined at the top of the gemm_nt and gemm_tn host functions that invoke the device kernel.
+
+  // Define shapes (dynamic)
+  auto M = int(m);
+  auto N = int(n);
+  auto K = int(k);
+  auto prob_shape = make_shape(M, N, K);    // (M, N, K)
+
+
+Inside the kernel, the problem shape is checked against the preconditions and then used to construct each of the full matrices.
+
+  // Preconditions
+  CUTE_STATIC_ASSERT_V(rank(shape_MNK) == Int<3>{});                      // (M, N, K)
+
+  CUTE_STATIC_ASSERT_V(congruent(select<0,2>(shape_MNK), dA));            // dA strides for shape MK
+  CUTE_STATIC_ASSERT_V(congruent(select<1,2>(shape_MNK), dB));            // dB strides for shape NK
+  CUTE_STATIC_ASSERT_V(congruent(select<0,1>(shape_MNK), dC));            // dC strides for shape MN
+
+  // Represent the full tensors
+  Tensor mA = make_tensor(make_gmem_ptr(A), select<0,2>(shape_MNK), dA);  // (M,K)
+  Tensor mB = make_tensor(make_gmem_ptr(B), select<1,2>(shape_MNK), dB);  // (N,K)
+  Tensor mC = make_tensor(make_gmem_ptr(C), select<0,1>(shape_MNK), dC);  // (M,N)
+
+
+Note that the comment after B says (N,K) rather than (K,N). This means that B is treated as an NxK matrix instead of a KxN matrix as is typical within BLAS and most other matrix-matrix multiplications. CuTe follows the convention that the semantics of matrix modes is (M,K) for A, (N,K) for B, and (M,N) for C, which we try to record in comments everywhere.
+
+
+CTA Partitioning
+
+Now that we have the representations of the full matrices, it’s time to tile them and split up the work.
+
+  // Define CTA tile sizes (static)
+  auto bM = Int<128>{};
+  auto bN = Int<128>{};
+  auto bK = Int<  8>{};
+  auto cta_tiler = make_shape(bM, bN, bK);  // (BLK_M, BLK_N, BLK_K)
+
+
+Once the tiler has been defined, we can use it to tile and partition the tensors across the CTAs.
+
+  auto cta_coord = make_coord(blockIdx.x, blockIdx.y, _);              // (m,n,k)
+
+  Tensor gA = local_tile(mA, cta_tiler, cta_coord, Step<_1, X,_1>{});  // (BLK_M,BLK_K,k)
+
+  Tensor gB = local_tile(mB, cta_tiler, cta_coord, Step< X,_1,_1>{});  // (BLK_N,BLK_K,k)
+
+  Tensor gC = local_tile(mC, cta_tiler, cta_coord, Step<_1,_1, X>{});  // (BLK_M,BLK_N)
+
+
+For tensor A, we are left with a rank-3 tensor of shape (BLK_M,BLK_K,k). The first two modes are precisely the modes of the CTA tile and the last mode indexes over all of the tiles that will be reduced by this CTA.
+
+
+SMEM tensors
+
+The shared memory layouts that are used to hold the tiles of data for A and B are also passed in as the parameters ASmemLayout sA_layout and BSmemLayout sB_layout.
+
+  // Shared memory buffers
+  __shared__ TA smemA[cosize_v<ASmemLayout>];
+  __shared__ TB smemB[cosize_v<BSmemLayout>];
+
+  Tensor sA = make_tensor(make_smem_ptr(smemA), sA_layout);  // (BLK_M,BLK_K)
+  Tensor sB = make_tensor(make_smem_ptr(smemB), sB_layout);  // (BLK_N,BLK_K)
+
+
+Copy partitioning
+
+With the data partitioned across the threads, every thread can now participate in the copy by writing
+
+copy(tAgA(_,_,0), tAsA);
+
+
+Math partitioning
+
+With the data partitioned across the threads, every thread can now participate in the compute step by writing
+
+gemm(tCsA, tCsB, tCrC);
+
+
+Mainloop
+
+The mainloop iterates over tiles of global memory, reads those tiles into shared memory, and then performs the matrix-multiply and accumulates into the accumulators.
+
+auto K_TILE_MAX = size<2>(tAgA);
+
+for (int k_tile = 0; k_tile < K_TILE_MAX; ++k_tile)
+{
+  copy(tAgA(_,_,k_tile), tAsA);
+  copy(tBgB(_,_,k_tile), tBsB);
+
+  cp_async_fence();
+  cp_async_wait<0>();
+  __syncthreads();
+
+  gemm(tCsA, tCsB, tCrC);
+
+  __syncthreads();
+}
+
+
+sgemm_2.cu
+
+An example that uses more complex TiledMMA and TiledCopy to perform partitioning in place of the tA, tB, and tC thread layouts. With this example, we try to emphasize that the shared memory layouts, the partitioning patterns, and the PTX instruction to use in each stage can be specified independently.
+
+
+TiledCopy
+
+TiledCopy partitioning provides for more complex partitioning patterns and checked dispatch to specific copy instructions.
+
+  TiledCopy copyA =
+      make_tiled_copy(
+          Copy_Atom<UniversalCopy<uint128_t>, TA>{},
+          Layout<Shape<_32,_8>>{},
+          Layout<Shape<_4,_1>>{}
+      );
+
+The UniversalCopy<uint128_t> forces the instruction to use a 128-bit copy instruction.
+
+
+TiledMMA
+
+TiledMMA partitioning provides for more complex partitioning patterns and checked dispatch to specific MMA instructions.
+
+  TiledMMA mmaC =
+      make_tiled_mma(
+          UniversalFMA<TC,TA,TB>{},
+          Layout<Shape<_16,_16,_1>>{}
+      );
+
+
+Other changes
+
+Shared memory layouts may be padded to avoid shared memory bank conflicts.
+
+  auto sA =
+      make_layout(
+          make_shape(bM, bK),
+          make_stride(Int<1>{}, bM+Int<1>{})
+      );
+
+  auto sB =
+      make_layout(
+          make_shape(bN, bK),
+          make_stride(Int<1>{}, bN+Int<1>{})
+      );
+
+
+sgemm_sm70.cu
+
+An example that uses an optimized mainloop for Volta SM70 architectures that pipelines shared memory and register memory.
+
+
+sgemm_sm80.cu
+
+An example that uses an optimized mainloop for Ampere SM80 architectures that explicitly pipelines shared memory using asynchronous reads from global memory.
+
+
+Next steps
+
+All of the above examples assume that the CTA tile size divides the problem size so that global memory loads do not need to be predicated. The predication section of the tutorial explains what to do if a matrix tiling doesn’t perfectly divide the matrix.
+
+
+GETT as GEMM
+
+“GETT” here stands for “general(ized) tensor times tensor,” a tensor contraction.
+
+CuTe permits matrices to have nested Layouts. This means that we can fold a Tensor into a “matrix” by grouping modes according to their categories.
+
+As a result, we can implement GETT by using our existing GEMM implementation.
