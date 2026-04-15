@@ -1,0 +1,133 @@
+
+2.2. Writing CUDA SIMT Kernels
+
+CUDA C++ kernels can largely be written in the same way that traditional CPU code would be written for a given problem. However, there are some unique features of the GPU that can be used to improve performance. Additionally, some understanding of how threads on the GPU are scheduled, how they access memory, and how their execution proceeds can help developers write kernels that maximize utilization of the available computing resources.
+
+2.2.1. Basics of SIMT
+
+From the developer’s perspective, the CUDA thread is the fundamental unit of parallelism. Warps and SIMT describes the basic SIMT model of GPU execution and SIMT Execution Model provides additional details of the SIMT model. The SIMT model allows each thread to maintain its own state and control flow. From a functional perspective, each thread can execute a separate code path. However, substantial performance improvements can be realized by taking care that kernel code minimizes the situations where threads in the same warp take divergent code paths.
+
+2.2.2. Thread Hierarchy
+
+Threads are organized into thread blocks, which are then organized into a grid. Grids may be 1, 2, or 3 dimensional and the size of the grid can be queried inside a kernel with the gridDim built-in variable. Thread blocks may also be 1, 2, or 3 dimensional. The size of the thread block can be queried inside a kernel with the blockDim built-in variable. The index of the thread block can be queried with the blockIdx built-in variable. Within a thread block, the index of the thread is obtained using the threadIdx built-in variable. These built-in variables are used to compute a unique global thread index for each thread, thereby enabling each thread to load/store specific data from global memory and execute a unique code path as needed.
+
+    gridDim.[x|y|z]: Size of the grid in the x, y and z dimension respectively. These values are set at kernel launch.
+
+    blockDim.[x|y|z]: Size of the block in the x, y and z dimension respectively. These values are set at kernel launch.
+
+    blockIdx.[x|y|z]: Index of the block in the x, y and z dimension respectively. These values change depending on which block is executing.
+
+    threadIdx.[x|y|z]: Index of the thread in the x, y and z dimension respectively. These values change depending on which thread is executing.
+
+The use of multi-dimensional thread blocks and grids is for convenience only and does not affect performance. The threads of a block are linearized predictably: the first index x moves the fastest, followed by y and then z. This means that in the linearization of a thread indices, consecutive values of threadIdx.x indicate consecutive threads, threadIdx.y has a stride of blockDim.x, and threadIdx.z has a stride of blockDim.x * blockDim.y. This affects how threads are assigned to warps, as detailed in Hardware Multithreading.
+
+2.2.3. GPU Device Memory Spaces
+
+CUDA devices have several memory spaces that can be accessed by CUDA threads within kernels. Table 1 shows a summary of the common memory types, their thread scopes, and their lifetimes. The following sections explain each of these memory types in more detail.
+
+Memory Type
+
+Scope
+
+Lifetime
+
+Location
+
+Global
+
+Grid
+
+Application
+
+Device
+
+Constant
+
+Grid
+
+Application
+
+Device
+
+Shared
+
+Block
+
+Kernel
+
+SM
+
+Local
+
+Thread
+
+Kernel
+
+Device
+
+Register
+
+Thread
+
+Kernel
+
+SM
+
+2.2.3.1. Global Memory
+
+Global memory (also called device memory) is the primary memory space for storing data that is accessible by all threads in a kernel. It is similar to RAM in a CPU system. Kernels running on the GPU have direct access to global memory in the same way code running on the CPU has access to system memory.
+
+Global memory is persistent. That is, an allocation made in global memory and the data stored in it persist until the allocation is freed or until the application is terminated. cudaDeviceReset also frees all allocations.
+
+Global memory is allocated with CUDA API calls such as cudaMalloc and cudaMallocManaged. Data can be copied into global memory from CPU memory using CUDA runtime API calls such as cudaMemcpy. Global memory allocations made with CUDA APIs are freed using cudaFree.
+
+Prior to a kernel launch, global memory is allocated and initialized by CUDA API calls. During kernel execution, data from global memory can be read by the CUDA threads, and the result from operations carried out by CUDA threads can be written back to global memory. Once a kernel has completed execution, the results it wrote to global memory can be copied back to the host or used by other kernels on the GPU.
+
+Because global memory is accessible by all threads in a grid, care must be taken to avoid data races between threads. Since CUDA kernels launched from the host have the return type void, the only way for numerical results computed by a kernel to be returned to the host is by writing those results to global memory.
+
+A simple example illustrating the use of global memory is the vecAdd kernel below, where the three arrays A, B, and C are in global memory and are being accessed by this vector add kernel.
+
+__global__ void vecAdd(float* A, float* B, float* C, int vectorLength)
+{
+    int workIndex = threadIdx.x + blockIdx.x*blockDim.x;
+    if(workIndex < vectorLength)
+    {
+        C[workIndex] = A[workIndex] + B[workIndex];
+    }
+}
+
+2.2.4. Memory Performance
+
+Ensuring proper memory usage is key to achieving high performance in CUDA kernels. This section discusses some general principles and examples for achieving high memory throughput in CUDA kernels.
+
+2.2.4.1. Coalesced Global Memory Access
+
+Global memory is accessed via 32-byte memory transactions. When a CUDA thread requests a word of data from global memory, the relevant warp coalesces the memory requests from all the threads in that warp into the number of memory transactions necessary to satisfy the request, depending on the size of the word accessed by each thread and the distribution of the memory addresses across the threads.
+
+To use the memory system most efficiently, the warp should use all the memory that is fetched in a single memory transaction.
+
+Conversely, the pathologically worst case scenario is when consecutive threads access data elements that are 32 bytes or more apart from each other in memory. In this case, the warp will be forced to issue a 32-byte memory transaction for each thread, resulting in very inefficient use of the memory system.
+
+The most straightforward way to achieve coalesced memory access is for consecutive threads to access consecutive elements in memory.
+
+Note
+
+Ensuring proper coalescing of global memory accesses is one of the most important performance considerations for writing performant CUDA kernels. It is imperative that applications use the memory system as efficiently as possible.
+
+2.2.5. Atomics
+
+Performant CUDA kernels rely on expressing as much algorithmic parallelism as possible. The asynchronous nature of GPU kernel execution requires that threads operate as independently as possible.
+
+Atomic functions allow a thread to obtain a lock on a global memory location and perform a read-modify-write operation on that location. No other thread can access the same location while the lock is held.
+
+Atomic functions should be used sparingly as they enforce thread synchronization that can impact performance.
+
+2.2.7. Kernel Launch and Occupancy
+
+When a CUDA kernel is launched, CUDA threads are grouped into thread blocks and a grid based on the execution configuration specified at kernel launch. Once the kernel is launched, the scheduler assigns thread blocks to SMs.
+
+The number of blocks that can be scheduled on an SM depends on the hardware resources a given thread block requires, and the hardware resources available on the SM.
+
+The occupancy of a CUDA kernel is the ratio of the number of active warps to the maximum number of active warps supported by the SM.
+
+In general, it’s a good practice to have occupancy as high as possible which hides latency and increases performance.
