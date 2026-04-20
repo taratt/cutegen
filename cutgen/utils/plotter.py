@@ -69,5 +69,5 @@ def process_all(main_dir, plots_dir="plots"):
 
 
 if __name__ == "__main__":
-    main_dir = "/home/tarasaba/PycharmProjects/cutgen/saved_nodes/cute/attempt_29"  # your root dir
-    process_all(main_dir, plots_dir="../plots_att29")
+    main_dir = "/home/tarasaba/PycharmProjects/cutgen/saved_nodes/cute/attempt_35_no_profile"  # your root dir
+    process_all(main_dir, plots_dir="../plots_att35_no_profile")

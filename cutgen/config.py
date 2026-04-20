@@ -13,10 +13,10 @@ DEBUG_PRINT = True # whether to print debug messages
 
 LOAD_MODEL_BACKOFF_TIME = 1.0 # time to wait before retrying a failed operation
 RUN_MODEL_BACKOFF_TIME = 2.0 # time to wait before retrying a failed operation
-GPU_REQ_SPACE = 0.25 # 1/4 GPU space reserved.
+GPU_REQ_SPACE = 0.85 # 1/4 GPU space reserved.
 CPU_REQ_SPACE = 70.0 # 70% CPU space reserved.
 
-COMPILE_LOG_CHARS = 5000 # maximum number of characters to pass into an llm to fix a compile error
+COMPILE_LOG_CHARS = 10000 # maximum number of characters to pass into an llm to fix a compile error
 
 MAX_FIX_ATTEMPTS = int(os.environ.get("SK_MAX_FIX_ATTEMPTS", 5)) # maximum number of attempts to fix a compile or correctness error
 MAX_RETRY_ATTEMPTS = 3 # maximum number of attempts to regenerate a node based on ref and prev_src
@@ -27,15 +27,15 @@ FIX_RETRIEVE = True
 CODEGEN_INITIAL_MODE = "original" # mode to generate the initial code, options: original, edits
 CODEGEN_OPTIMIZE_MODE = "edits" # mode to optimize the code, options: original, edits
 
-MAX_CONCURRENT_PROCESSES = 10 # maximum number of concurrent processes for node execution
+MAX_CONCURRENT_PROCESSES = 1 # maximum number of concurrent processes for node execution
 EVAL_RUN_TIMEOUT = 300.0 # maximum time to wait for a child process to finish run_in_subprocess
 MAX_CONCURRENT_PROBLEMS = 1 # maximum number of problems to run concurrently on the coordinator
-MAX_DEPTH = 8 # maximum depth of the search
+MAX_DEPTH = 10 # maximum depth of the search
 MAX_RETRIES_PER_DEPTH = 0
 
 FEEDBACK_MODE = "iterative"
-USE_PROFILING = True
-PROFILING_START_DEPTH = 2
+USE_PROFILING = False
+PROFILING_START_DEPTH = 5
 NSIGHT_COMPUTE_BIN = os.environ.get("NSIGHT_COMPUTE_BIN", "/usr/local/cuda/bin/ncu")
 NSIGHT_COMPUTE_SET = "basic"
 BENCHMARK_TORCH_COMPILE = False # whether to benchmark the torch compile

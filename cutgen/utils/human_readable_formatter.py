@@ -56,6 +56,6 @@ def print_history(file_path: str):
         print("\n\n")
 
     print(data["src"])
-file_path = "/home/tarasaba/PycharmProjects/cutgen/saved_nodes/cute/attempt_12/1_Square_matrix_multiplication_.py/10_20251226-144542.json"
+file_path = "/home/tarasaba/PycharmProjects/cutgen/saved_nodes/level1/19_ReLU.py/0_20251017-103407.json"
 print_json_pretty(file_path)
 print_history(file_path)

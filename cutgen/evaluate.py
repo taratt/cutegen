@@ -62,6 +62,7 @@ def wait_for_gpu_memory(required_bytes: int, device: int):
     required_bytes is the estimated bytes needed by the upcoming step.
     We also enforce the configured GPU_REQ_SPACE fraction of total VRAM.
     """
+    return
     while True:
         free_b, total_b = torch.cuda.mem_get_info(device)
         gpu_free_frac = free_b / total_b
