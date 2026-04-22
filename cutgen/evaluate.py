@@ -18,7 +18,7 @@ import traceback
 from torch.fx import symbolic_trace
 import GPUtil
 import psutil
-
+import glob
 import re
 from typing import Dict, Any, List
 
@@ -156,9 +156,10 @@ def safe_rmtree(path: str):
     """Delete a directory if it exists, ignore errors."""
     try:
         if path and os.path.exists(path):
-            shutil.rmtree(path, ignore_errors=True)
+            shutil.rmtree(path)
+            print(f"removed {path}")
     except Exception:
-        pass
+        print(f"failed to remove {path}: {e}")
 
 def load_original_model_and_inputs(ref: str, context: dict, metadata: dict) -> tuple[nn.Module, callable, callable]:
     try:
@@ -192,7 +193,7 @@ def load_custom_model(model_custom_src: str, context: dict, metadata: dict, buil
         "import os\nimport gc\n"
         f"os.environ['TORCH_EXTENSIONS_DIR'] = '{build_directory}'\n"
     ) + model_custom_src
-
+    model_custom_src = model_custom_src.replace("verbose=False", "verbose=True")
     retval = True
 
     read_fd, write_fd = os.pipe()
@@ -1508,6 +1509,7 @@ def _load_profiler_script(
     seed_num: int = 42,
     num_warmups: int = 5,
     num_iters: int = 100,
+    prebuilt_so_files=None,
 ):
     """
     Generate profiler.py by reading cutgen/profiler_template.py and replacing placeholders.
@@ -1531,6 +1533,7 @@ def _load_profiler_script(
         .replace("__NUM_ITERS__", str(num_iters))
         .replace("__REF_SRC__", ref_src.replace('"""', '\\"\\"\\"'))
         .replace("__GEN_SRC__", gen_src.replace('"""', '\\"\\"\\"'))
+        .replace("__PREBUILT_SO_FILES__", json.dumps(prebuilt_so_files))
     )
 
     with open(profiler_script_path, "w", encoding="utf-8") as f:
@@ -1549,44 +1552,83 @@ def run_nsight_profile(
     if NSIGHT_COMPUTE_BIN is None or not os.path.exists(NSIGHT_COMPUTE_BIN):
         metadata["profile_error"] = f"Nsight Compute not found: {NSIGHT_COMPUTE_BIN}"
         return None
-
-    # resolve device index
     if isinstance(device, torch.device):
         device_index = device.index
     else:
         device_index = int(str(device or 0))
 
-    if build_directory is None:
-        build_directory = tempfile.mkdtemp(prefix="ncu_build_")
-
-    tmp_dir = tempfile.mkdtemp(prefix="ncu_prof_", dir=build_directory)
+    profile_build_directory = tempfile.mkdtemp(prefix="ncu_build_")
+    tmp_dir = tempfile.mkdtemp(prefix="ncu_prof_")
     profiler_script = os.path.join(tmp_dir, "profiler.py")
 
-    # Write profiler.py from template
+    metadata["profile_build_directory"] = profile_build_directory
+    metadata["profile_tmp_directory"] = tmp_dir
+    prebuild_meta = {"compile": "", "correct": ""}
+    prebuild_context = {}
+    model_new = load_custom_model(gen_src, prebuild_context, prebuild_meta, profile_build_directory)
+    if model_new is None:
+        metadata["profile_error"] = f"Fresh prebuild failed before ncu: {prebuild_meta.get('compile', '')}"
+        metadata["profile_prebuild_meta"] = prebuild_meta
+        return None 
+    so_files = glob.glob(os.path.join(profile_build_directory, "**", "*.so"), recursive=True)
+    if not so_files:
+       metadata["profile_error"] = f"No prebuilt .so found under {profile_build_directory}"
+       metadata["profile_error"] = f"Nsight Compute exited {proc.returncode}"
+       print("PROFILE FAILED")
+       print("CMD:", metadata.get("profile_cmd"))
+       print("STDOUT:", metadata.get("profile_stdout"))
+       print("STDERR:", metadata.get("profile_stderr"))
+       print("BUILD DIR:", metadata.get("profile_build_directory"))
+       print("TMP DIR:", metadata.get("profile_tmp_directory"))
+       return None
+   # Write profiler.py from template
     _load_profiler_script(
         profiler_script_path=profiler_script,
         ref_src=ref_src,
         gen_src=gen_src,
-        build_directory=build_directory,
+        build_directory=profile_build_directory,
         device_index=device_index,
         seed_num=seed_num,
         num_warmups=num_warmups,
         num_iters=num_iters,
+        prebuilt_so_files=so_files,
     )
+    
 
+    PYTHON_BIN = "/home/user/cutgen/venv/bin/python3"
+    #env = os.environ.copy()
+    #venv_bin = os.path.dirname(sys.executable)
+    #env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
+    env = os.environ.copy()
+
+# Force exact same venv
+    env["VIRTUAL_ENV"] = "/home/user/cutgen/venv"
+
+# Put venv first in PATH
+    env["PATH"] = "/home/user/cutgen/venv/bin:/usr/local/cuda/bin:" + env.get("PATH", "")
+
+# Ensure CUDA is consistent
+    env["CUDA_HOME"] = "/usr/local/cuda"
+    env["LD_LIBRARY_PATH"] = "/usr/local/cuda/lib64:" + env.get("LD_LIBRARY_PATH", "")
+
+# Keep build directory consistent
+    env["TORCH_EXTENSIONS_DIR"] = profile_build_directory
     cmd = [
+        "sudo",
+        "env",
+        f"PATH={env['PATH']}",
+        f"CUDA_HOME={env['CUDA_HOME']}",
+        f"LD_LIBRARY_PATH={env['LD_LIBRARY_PATH']}",
+        f"VIRTUAL_ENV={env['VIRTUAL_ENV']}",
+        f"TORCH_EXTENSIONS_DIR={env['TORCH_EXTENSIONS_DIR']}",
         NSIGHT_COMPUTE_BIN,
         "--set", "basic",
         "--target-processes", "all",
-        "--nvtx",                    # enable NVTX awareness
+        "--nvtx",
         "--nvtx-include", "CUTGEN_PROFILE_ITER/",
-        sys.executable,
+        PYTHON_BIN,
         profiler_script,
     ]
-
-    env = os.environ.copy()
-    venv_bin = os.path.dirname(sys.executable)
-    env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
 
     proc = subprocess.run(
         cmd,
@@ -1605,11 +1647,19 @@ def run_nsight_profile(
         metadata["nsight_metrics"] = metrics
 
     metadata["profile_returncode"] = proc.returncode
+#    safe_rmtree(tmp_dir)
+  #      metadata["nsight_metrics"] = metrics
     safe_rmtree(tmp_dir)
-
+    safe_rmtree(profile_build_directory)
     if proc.returncode != 0:
-        metadata["profile_error"] = f"Nsight Compute exited {proc.returncode}"
-        return None
+       metadata["profile_error"] = f"Nsight Compute exited {proc.returncode}"
+       print("PROFILE FAILED")
+       print("CMD:", metadata.get("profile_cmd"))
+       print("STDOUT:", metadata.get("profile_stdout"))
+       print("STDERR:", metadata.get("profile_stderr"))
+       print("BUILD DIR:", metadata.get("profile_build_directory"))
+       print("TMP DIR:", metadata.get("profile_tmp_directory"))
+       return None
     print(metadata["profile_stdout"])
     return {"returncode": proc.returncode}
 
@@ -1650,7 +1700,9 @@ def evaluate(node: Node, get_time=True, get_profile=USE_PROFILING, torch_compile
     if not flag_compile:
         debug_print(f"Node {node.uuid} compile error: {node.metadata['compile']}. Metadata: {node.metadata}")
         node.error_type = ErrorType.COMPILE
+        print("before remove:", build_directory, os.path.exists(build_directory))
         remove_build_directory(build_directory)
+        print("after remove:", build_directory, os.path.exists(build_directory))
         return
 
     gpu_lock_fd, device = acquire_gpu()
@@ -1671,7 +1723,9 @@ def evaluate(node: Node, get_time=True, get_profile=USE_PROFILING, torch_compile
     if not flag_correct:
         debug_print(f"Node {node.uuid} correct error: {node.metadata['correct']}. Metadata: {node.metadata}")
         node.error_type = ErrorType.CORRECT
+        print("before remove:", build_directory, os.path.exists(build_directory))
         remove_build_directory(build_directory)
+        print("after remove:", build_directory, os.path.exists(build_directory))
         return
 
     node.error_type = ErrorType.PASS
@@ -1710,7 +1764,6 @@ def evaluate(node: Node, get_time=True, get_profile=USE_PROFILING, torch_compile
             node.ref,
             node.src,
             node.metadata,
-            build_directory=build_directory,
             device=device,
         )
 
