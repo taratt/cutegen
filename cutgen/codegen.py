@@ -8,16 +8,17 @@ import json
 import random
 from typing import Dict, Any, List
 
+from typing import Dict, Any, List
+
 def build_nsight_addendum_from_metrics(metrics: Dict[str, Any]) -> str:
     if not metrics:
         return ""
 
     kernel = metrics.get("kernel", "unknown_kernel")
-    cfg = metrics.get("config", {})
-    sections = metrics.get("sections", {})
-    advice = metrics.get("advice", {})
+    cfg = metrics.get("config", {}) or {}
+    sections = metrics.get("sections", {}) or {}
+    advice = metrics.get("advice", {}) or {}
 
-    # Extract key metrics with safe defaults
     block_size = cfg.get("block_size", "unknown")
     grid_size = cfg.get("grid_size", "unknown")
     regs = cfg.get("registers_per_thread", "unknown")
@@ -26,50 +27,96 @@ def build_nsight_addendum_from_metrics(metrics: Dict[str, Any]) -> str:
     occ_theoretical = cfg.get("theoretical_occupancy_pct", "unknown")
     occ_achieved = cfg.get("achieved_occupancy_pct", "unknown")
 
-    sol = sections.get("GPU Speed Of Light Throughput", {})
+    sol = sections.get("GPU Speed Of Light Throughput", {}) or {}
+
     duration = sol.get("Duration", {}).get("value", "unknown")
     mem_throughput = sol.get("Memory Throughput", {}).get("value", "unknown")
     sm_throughput = sol.get("Compute (SM) Throughput", {}).get("value", "unknown")
     dram_throughput = sol.get("DRAM Throughput", {}).get("value", "unknown")
 
-    inf_msgs = advice.get("INF", [])
-    opt_msgs = advice.get("OPT", [])
+    inf_msgs = advice.get("INF", []) or []
+    opt_msgs = advice.get("OPT", []) or []
 
-    # Build a concise, LLM-friendly summary
-    lines = []
-    lines.append(f"Kernel name: {kernel}")
-    lines.append(f"Launch config: block_size={block_size}, grid_size={grid_size}")
+    def is_num(x):
+        return isinstance(x, (int, float))
+
+    signals: List[str] = []
+
+    if is_num(regs) and is_num(occ_achieved):
+        if regs >= 96 and occ_achieved <= 40:
+            signals.append("possible_register_pressure")
+
+    if is_num(mem_throughput) and is_num(sm_throughput):
+        if mem_throughput >= 70 and sm_throughput <= 50:
+            signals.append("likely_memory_bound")
+
+        if sm_throughput >= 70 and mem_throughput <= 50:
+            signals.append("likely_compute_bound")
+
+        if mem_throughput <= 40 and sm_throughput <= 40:
+            signals.append("possible_structural_inefficiency")
+
+    if is_num(smem_static) and smem_static == 0:
+        signals.append("no_static_shared_memory")
+
+    lines: List[str] = []
+
+    lines.append("[NSIGHT_PROFILE]")
+    lines.append(f"kernel={kernel}")
+    lines.append(f"block_size={block_size}")
+    lines.append(f"grid_size={grid_size}")
+    lines.append(f"registers_per_thread={regs}")
+    lines.append(f"static_smem_kb={smem_static}")
+    lines.append(f"dynamic_smem_bytes={smem_dynamic}")
+    lines.append(f"duration_ms={duration}")
+    lines.append(f"compute_throughput_pct={sm_throughput}")
+    lines.append(f"memory_throughput_pct={mem_throughput}")
+    lines.append(f"dram_throughput_pct={dram_throughput}")
+    lines.append(f"theoretical_occupancy_pct={occ_theoretical}")
+    lines.append(f"achieved_occupancy_pct={occ_achieved}")
+    lines.append("[/NSIGHT_PROFILE]")
+
+    lines.append("")
+    lines.append("[NSIGHT_SIGNALS]")
+
+    if signals:
+        for s in signals:
+            lines.append(f"- {s}")
+    else:
+        lines.append("- no_strong_signal")
+
+    lines.append("[/NSIGHT_SIGNALS]")
+
+    lines.append("")
+    lines.append("[NSIGHT_USAGE_RULES]")
     lines.append(
-        f"Registers per thread={regs}, static_smem_kb={smem_static}, "
-        f"dynamic_smem_bytes={smem_dynamic}"
+        "- Use these signals as supporting evidence, not as the sole driver of the optimization choice."
     )
     lines.append(
-        f"Duration≈{duration} ms, Compute throughput≈{sm_throughput}%, "
-        f"Memory throughput≈{mem_throughput}%, DRAM throughput≈{dram_throughput}%"
+        "- For GEMM and convolution kernels, prefer structural optimization guidance unless profiler data gives a very strong bottleneck signal."
     )
     lines.append(
-        f"Occupancy: theoretical≈{occ_theoretical}%, achieved≈{occ_achieved}% "
-        f"(register-limited if registers per thread is high)."
+        "- Do not spend the only optimization attempt on minor launch tuning if stronger structural improvements are still missing."
     )
+    lines.append("[/NSIGHT_USAGE_RULES]")
 
-    if inf_msgs:
-        lines.append("Nsight INF advice:")
-        for msg in inf_msgs:
-            lines.append(f"- {msg}")
-    if opt_msgs:
-        lines.append("Nsight OPT advice:")
-        for msg in opt_msgs:
-            lines.append(f"- {msg}")
+    if inf_msgs or opt_msgs:
+        lines.append("")
+        lines.append("[NSIGHT_TOOL_ADVICE]")
 
-    addendum = "\n".join(lines)
+        if inf_msgs:
+            lines.append("INF:")
+            for msg in inf_msgs[:5]:
+                lines.append(f"- {msg}")
 
-    # Wrap in a clear block for your prompts
-    return (
-        "\n\n[NSIGHT_COMPUTE_PROFILE]\n"
-        + addendum
-        + "\n[/NSIGHT_COMPUTE_PROFILE]\n"
-    )
+        if opt_msgs:
+            lines.append("OPT:")
+            for msg in opt_msgs[:5]:
+                lines.append(f"- {msg}")
 
+        lines.append("[/NSIGHT_TOOL_ADVICE]")
+
+    return "\n" + "\n".join(lines) + "\n"
 def build_nsight_addendum_for_node(node: Node) -> str:
     metrics = node.metadata.get("prev_nsight_metrics", {})
     return build_nsight_addendum_from_metrics(metrics)
@@ -116,6 +163,14 @@ def codegen_edits(node: Node, addendum=""):
     with open(EDIT_PROMPT_FILE, "r") as file:
         edit_prompt = file.read()
     prompt = edit_prompt.replace("<NODE_PRV_SRC>", get_numbered_lines(src_lines))
+    prompt = prompt.replace(
+        "<REFERENCE_TIME>",
+        str(getattr(node, "ref_time", "UNKNOWN"))
+    )
+    prompt = prompt.replace(
+        "<PREVIOUS_SOURCE_TIME>",
+        str(node.metadata.get("previous_src_time", "UNKNOWN"))
+    )
     if USE_PROFILING and node.depth > PROFILING_START_DEPTH:
         prompt += "Here are some profiling data that you should use to decide how to optimize the code:\n"
         prompt += build_nsight_addendum_for_node(node)
