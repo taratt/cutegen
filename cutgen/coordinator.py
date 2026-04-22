@@ -25,6 +25,7 @@ def _run_node_worker(node_data, code_optimize_addendum="", codegen_initial_adden
             next_node.metadata["last_passed_src"] = node.metadata["last_passed_src"]
             next_node.metadata["last_passed_depth"] = node.metadata["last_passed_depth"]
             next_node.metadata["retries_by_depth"] = node.metadata.get("retries_by_depth", {}).copy()
+            next_node.metadata["previous_src_time"] = node.time
 
         else:
             if node.depth > 0:
