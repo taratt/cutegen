@@ -223,7 +223,6 @@ def get_init_inputs():
 
 The example new arch with custom convolution CUTE kernels looks like this:
 ```
-import os
 import math
 import torch
 import torch.nn as nn
@@ -232,13 +231,10 @@ from torch.utils.cpp_extension import load_inline
 
 cuda_decl = r"""
 #include <torch/extension.h>
-torch::Tensor convtrans3d_forward(torch::Tensor x,
-                                  torch::Tensor w,
-                                  c10::optional<torch::Tensor> b,
-                                  int stride_d, int stride_h, int stride_w,
-                                  int pad_d, int pad_h, int pad_w,
-                                  int out_pad_d, int out_pad_h, int out_pad_w,
-                                  int groups);
+torch::Tensor dwconv2d_depthwise_k1_forward(torch::Tensor x,
+                                            torch::Tensor w,
+                                            c10::optional<torch::Tensor> b,
+                                            int stride, int padding, int dilation);
 """
 
 cuda_src = r"""
@@ -249,229 +245,190 @@ cuda_src = r"""
 
 using namespace cute;
 
-__device__ __forceinline__ int pos_mod(int a, int m) {
-  int r = a % m;
-  return r < 0 ? r + m : r;
-}
-
 template <typename T>
-__global__ void convtrans3d_kernel(
+__global__ void dwconv2d_k1_kernel(
     const T* __restrict__ X,
     const T* __restrict__ W,
     const T* __restrict__ B,
     T* __restrict__ Y,
-    int N, int C_in, int C_out,
-    int D_in, int H_in, int W_in,
-    int D_out, int H_out, int W_out,
-    int Kd, int Kh, int Kw,
-    int stride_d, int stride_h, int stride_w,
-    int pad_d, int pad_h, int pad_w,
-    int out_pad_d, int out_pad_h, int out_pad_w,
-    int groups)
+    int N, int C, int H, int Win,
+    int K, int stride, int padding, int dilation,
+    int Hout, int Wout)
 {
-  constexpr int Threads    = 128;
-  constexpr int PVec       = 1;
-  constexpr int OcPerBlock = 4;
-  constexpr int KChunk     = 64;
+  constexpr int Threads     = 128;
+  constexpr int PVec        = 2;
+  constexpr int CcPerBlock  = 4;
+  constexpr int KChunk      = 64;
 
   const int tid = threadIdx.x;
-  const int P_total = D_out * H_out * W_out;
-  const int PTile   = Threads * PVec;
 
-  const int Cg_in    = C_in / groups;
-  const int Cg_out   = C_out / groups;
-  const int Kspatial = Kd * Kh * Kw;
-  const int K_total  = Cg_in * Kspatial;
+  // Block coordinates
+  const int n         = blockIdx.z;
+  const int c_tile    = blockIdx.y;
+  const int c_base    = c_tile * CcPerBlock;
 
-  const int n = blockIdx.z;
+  const int P_total   = Hout * Wout;
+  const int PTile     = Threads * PVec;
+  const int p_block   = blockIdx.x * PTile;
 
-  const int tiles_per_group = (Cg_out + OcPerBlock - 1) / OcPerBlock;
-  const int g       = blockIdx.y / tiles_per_group;
-  const int oc_tile = blockIdx.y - g * tiles_per_group;
-  const int oc_base = g * Cg_out + oc_tile * OcPerBlock;
+  // Memory strides
+  const int64_t sXn = (int64_t)C * H * Win;
+  const int64_t sXc = (int64_t)H * Win;
+  const int64_t sXh = (int64_t)Win;
 
-  const int64_t sXn = (int64_t)C_in * D_in * H_in * W_in;
-  const int64_t sXc = (int64_t)D_in * H_in * W_in;
+  const int64_t sYn = (int64_t)C * Hout * Wout;
+  const int64_t sYc = (int64_t)Hout * Wout;
+  const int64_t sYh = (int64_t)Wout;
 
-  const int64_t sYn = (int64_t)C_out * D_out * H_out * W_out;
-  const int64_t sYc = (int64_t)D_out * H_out * W_out;
-
+  // Global tensors using Cute
   auto mX = make_tensor(
       make_gmem_ptr(X + (int64_t)n * sXn),
-      make_shape(C_in, D_in * H_in * W_in),
-      make_stride(sXc, Int<1>{})
+      make_shape(C, H, Win),
+      make_stride(sXc, sXh, Int<1>{})
   );
 
   auto mY = make_tensor(
       make_gmem_ptr(Y + (int64_t)n * sYn),
-      make_shape(C_out, P_total),
-      make_stride(sYc, Int<1>{})
+      make_shape(C, Hout, Wout),
+      make_stride(sYc, sYh, Int<1>{})
   );
 
   auto mW = make_tensor(
       make_gmem_ptr(W),
-      make_shape(C_in, Cg_out, Kd, Kh, Kw),
-      make_stride((int64_t)Cg_out * Kd * Kh * Kw,
-                  (int64_t)Kd * Kh * Kw,
-                  (int64_t)Kh * Kw,
-                  (int64_t)Kw,
-                  Int<1>{})
+      make_shape(C, K),
+      make_stride(K, Int<1>{})
   );
 
-  __shared__ T   sW_raw[OcPerBlock * KChunk];
-  __shared__ int sIC_raw[KChunk];
-  __shared__ int sKD_raw[KChunk];
-  __shared__ int sKH_raw[KChunk];
-  __shared__ int sKW_raw[KChunk];
-
+  // Shared memory for weight chunks
+  __shared__ T sW_raw[CcPerBlock * KChunk];
   auto sW = make_tensor(
       make_smem_ptr(sW_raw),
-      make_shape(Int<OcPerBlock>{}, Int<KChunk>{}),
+      make_shape(Int<CcPerBlock>{}, Int<KChunk>{}),
       make_stride(Int<KChunk>{}, Int<1>{})
   );
-  auto sIC = make_tensor(make_smem_ptr(sIC_raw), make_shape(Int<KChunk>{}), make_stride(Int<1>{}));
-  auto sKD = make_tensor(make_smem_ptr(sKD_raw), make_shape(Int<KChunk>{}), make_stride(Int<1>{}));
-  auto sKH = make_tensor(make_smem_ptr(sKH_raw), make_shape(Int<KChunk>{}), make_stride(Int<1>{}));
-  auto sKW = make_tensor(make_smem_ptr(sKW_raw), make_shape(Int<KChunk>{}), make_stride(Int<1>{}));
 
-  int p_idx[PVec];
-  int zyx[3 * PVec];
+  // Precompute p indices and (oh, ow), as well as base input indices
+  int   p_idx[PVec];
+  int   oh_arr[PVec];
+  int   ow_arr[PVec];
+  int   base_ih0[PVec];
+  int   iw_arr[PVec];
+  bool  wv_arr[PVec];
 
   #pragma unroll
   for (int i = 0; i < PVec; ++i) {
-    int p = blockIdx.x * PTile + tid + i * Threads;
+    int p = p_block + tid + i * Threads;
     p_idx[i] = p;
 
-    int z = 0, y = 0, x = 0;
+    int oh = 0, ow = 0;
+    int b_wv = 0;
+
     if (p < P_total) {
-      int plane = H_out * W_out;
-      z = p / plane;
-      int rem = p - z * plane;
-      y = rem / W_out;
-      x = rem - y * W_out;
+      oh = p / Wout;
+      ow = p - oh * Wout;
+      int iw = ow * stride - padding;
+      b_wv = (iw >= 0 && iw < Win);
+      oh_arr[i] = oh;
+      ow_arr[i] = ow;
+      iw_arr[i] = iw;
+      base_ih0[i] = oh * stride - padding;
+      wv_arr[i] = (b_wv != 0);
+    } else {
+      oh_arr[i] = 0;
+      ow_arr[i] = 0;
+      iw_arr[i] = -1;
+      base_ih0[i] = 0;
+      wv_arr[i] = false;
     }
-    zyx[3 * i + 0] = z;
-    zyx[3 * i + 1] = y;
-    zyx[3 * i + 2] = x;
   }
 
-  float acc[OcPerBlock][PVec];
+  // Accumulators initialized with bias if present
+  float acc[CcPerBlock][PVec];
   #pragma unroll
-  for (int oc_i = 0; oc_i < OcPerBlock; ++oc_i) {
-    int oc = oc_base + oc_i;
-    float bval = (B != nullptr && oc < C_out) ? (float)B[oc] : 0.0f;
+  for (int cc = 0; cc < CcPerBlock; ++cc) {
+    int c = c_base + cc;
+    float bval = 0.0f;
+    if (B != nullptr && c < C) {
+      bval = (float)B[c];
+    }
     #pragma unroll
     for (int i = 0; i < PVec; ++i) {
-      acc[oc_i][i] = bval;
+      acc[cc][i] = bval;
     }
   }
 
-  for (int k0 = 0; k0 < K_total; k0 += KChunk) {
+  for (int k0 = 0; k0 < K; k0 += KChunk) {
+    // Load weight chunk for CcPerBlock channels
     for (int kk = tid; kk < KChunk; kk += Threads) {
-      int kk_global = k0 + kk;
-
-      int icg = -1, kd = -1, kh = -1, kw = -1;
-      if (kk_global < K_total) {
-        icg = kk_global / Kspatial;
-        int t = kk_global - icg * Kspatial;
-        kd = t / (Kh * Kw);
-        int rem = t - kd * (Kh * Kw);
-        kh = rem / Kw;
-        kw = rem - kh * Kw;
-      }
-
-      sIC(kk) = icg;
-      sKD(kk) = kd;
-      sKH(kk) = kh;
-      sKW(kk) = kw;
+      int k_global = k0 + kk;
 
       #pragma unroll
-      for (int oc_i = 0; oc_i < OcPerBlock; ++oc_i) {
-        int oc = oc_base + oc_i;
+      for (int cc = 0; cc < CcPerBlock; ++cc) {
+        int c = c_base + cc;
         T wval = T(0);
-        if (kk_global < K_total && oc < C_out) {
-          int oc_rel = oc - g * Cg_out;
-          int ic_global = g * Cg_in + icg;
-          wval = mW(ic_global, oc_rel, kd, kh, kw);
+        if (c < C && k_global < K) {
+          wval = mW(c, k_global);
         }
-        sW(oc_i, kk) = wval;
+        sW(cc, kk) = wval;
       }
     }
     __syncthreads();
 
+    // Compute on this chunk
     #pragma unroll
     for (int i = 0; i < PVec; ++i) {
       int p = p_idx[i];
       if (p >= P_total) continue;
 
-      int z = zyx[3 * i + 0];
-      int y = zyx[3 * i + 1];
-      int x = zyx[3 * i + 2];
+      int iw = iw_arr[i];
+      bool wv = wv_arr[i];
+      if (!wv) continue;
+
+      int ih0 = base_ih0[i];
 
       #pragma unroll
       for (int kk = 0; kk < KChunk; ++kk) {
-        int kk_global = k0 + kk;
-        if (kk_global >= K_total) break;
+        int k_global = k0 + kk;
+        if (k_global >= K) break;
 
-        int icg = sIC(kk);
-        int kd  = sKD(kk);
-        int kh  = sKH(kk);
-        int kw  = sKW(kk);
-
-        if (icg < 0) continue;
-
-        int zz = z + pad_d - kd;
-        int yy = y + pad_h - kh;
-        int xx = x + pad_w - kw;
-
-        if (pos_mod(zz, stride_d) != 0) continue;
-        if (pos_mod(yy, stride_h) != 0) continue;
-        if (pos_mod(xx, stride_w) != 0) continue;
-
-        int iz = zz / stride_d;
-        int iy = yy / stride_h;
-        int ix = xx / stride_w;
-
-        if ((unsigned)iz >= (unsigned)D_in) continue;
-        if ((unsigned)iy >= (unsigned)H_in) continue;
-        if ((unsigned)ix >= (unsigned)W_in) continue;
-
-        int ic_global = g * Cg_in + icg;
-        int p_in = (iz * H_in + iy) * W_in + ix;
-        float xval = (float)mX(ic_global, p_in);
+        int ih = ih0 + k_global * dilation;
+        if ((unsigned)ih >= (unsigned)H) continue;
 
         #pragma unroll
-        for (int oc_i = 0; oc_i < OcPerBlock; ++oc_i) {
-          int oc = oc_base + oc_i;
-          if (oc >= C_out) continue;
-          float wval = (float)sW(oc_i, kk);
-          acc[oc_i][i] += xval * wval;
+        for (int cc = 0; cc < CcPerBlock; ++cc) {
+          int c = c_base + cc;
+          if (c >= C) continue;
+
+          float xval = (float)mX(c, ih, iw);
+          float wval = (float)sW(cc, kk);
+          acc[cc][i] += xval * wval;
         }
       }
     }
     __syncthreads();
   }
 
+  // Store results
   #pragma unroll
-  for (int oc_i = 0; oc_i < OcPerBlock; ++oc_i) {
-    int oc = oc_base + oc_i;
-    if (oc >= C_out) continue;
+  for (int cc = 0; cc < CcPerBlock; ++cc) {
+    int c = c_base + cc;
+    if (c >= C) continue;
+
     #pragma unroll
     for (int i = 0; i < PVec; ++i) {
       int p = p_idx[i];
       if (p >= P_total) continue;
-      mY(oc, p) = static_cast<T>(acc[oc_i][i]);
+      int oh = oh_arr[i];
+      int ow = ow_arr[i];
+      mY(c, oh, ow) = static_cast<T>(acc[cc][i]);
     }
   }
 }
 
-torch::Tensor convtrans3d_forward(torch::Tensor x,
-                                  torch::Tensor w,
-                                  c10::optional<torch::Tensor> b,
-                                  int stride_d, int stride_h, int stride_w,
-                                  int pad_d, int pad_h, int pad_w,
-                                  int out_pad_d, int out_pad_h, int out_pad_w,
-                                  int groups) {
+torch::Tensor dwconv2d_depthwise_k1_forward(torch::Tensor x,
+                                            torch::Tensor w,
+                                            c10::optional<torch::Tensor> b,
+                                            int stride, int padding, int dilation) {
   TORCH_CHECK(x.is_cuda(), "x must be CUDA");
   TORCH_CHECK(w.is_cuda(), "w must be CUDA");
   if (b.has_value()) TORCH_CHECK(b.value().is_cuda(), "bias must be CUDA if provided");
@@ -480,32 +437,25 @@ torch::Tensor convtrans3d_forward(torch::Tensor x,
   TORCH_CHECK(w.scalar_type() == at::kFloat, "w must be float32");
   if (b.has_value()) TORCH_CHECK(b.value().scalar_type() == at::kFloat, "bias must be float32");
 
-  TORCH_CHECK(x.dim() == 5, "x must be [N, C_in, D, H, W]");
-  TORCH_CHECK(w.dim() == 5, "w must be [C_in, C_out/groups, Kd, Kh, Kw]");
+  TORCH_CHECK(x.dim() == 4, "x must be [N, C, H, W]");
+  TORCH_CHECK(w.dim() == 4, "w must be [C, 1, K, 1] for depthwise conv (groups=C)");
 
-  int64_t N = x.size(0);
-  int64_t C_in = x.size(1);
-  int64_t D_in = x.size(2);
-  int64_t H_in = x.size(3);
-  int64_t W_in = x.size(4);
+  int64_t N   = x.size(0);
+  int64_t C   = x.size(1);
+  int64_t H   = x.size(2);
+  int64_t Win = x.size(3);
 
-  int64_t Cin_w = w.size(0);
-  int64_t Cout_per_g = w.size(1);
-  int64_t Kd = w.size(2);
-  int64_t Kh = w.size(3);
-  int64_t Kw = w.size(4);
+  TORCH_CHECK(w.size(0) == C, "w.size(0) must equal C");
+  TORCH_CHECK(w.size(1) == 1, "w.size(1) must be 1 for depthwise");
+  TORCH_CHECK(w.size(3) == 1, "w.size(3) must be 1 for (kernel_width=1)");
+  int64_t K = w.size(2);
 
-  TORCH_CHECK(Cin_w == C_in, "w.size(0) must equal C_in");
-  TORCH_CHECK(groups > 0, "groups must be > 0");
-  TORCH_CHECK((C_in % groups) == 0, "C_in must be divisible by groups");
+  TORCH_CHECK(stride > 0 && dilation > 0, "stride and dilation must be > 0");
+  TORCH_CHECK(padding >= 0, "padding must be >= 0");
 
-  int64_t C_out = Cout_per_g * groups;
-
-  int64_t D_out = (D_in - 1) * stride_d - 2 * pad_d + Kd + out_pad_d;
-  int64_t H_out = (H_in - 1) * stride_h - 2 * pad_h + Kh + out_pad_h;
-  int64_t W_out = (W_in - 1) * stride_w - 2 * pad_w + Kw + out_pad_w;
-
-  TORCH_CHECK(D_out > 0 && H_out > 0 && W_out > 0, "Invalid output size");
+  int64_t Hout = (H + 2 * padding - dilation * (K - 1) - 1) / stride + 1;
+  int64_t Wout = (Win + 2 * padding - dilation * (1 - 1) - 1) / stride + 1; // kw=1
+  TORCH_CHECK(Hout > 0 && Wout > 0, "Invalid output size computed");
 
   auto x_c = x.contiguous();
   auto w_c = w.contiguous();
@@ -514,54 +464,49 @@ torch::Tensor convtrans3d_forward(torch::Tensor x,
   const float* b_ptr = nullptr;
   if (b.has_value()) {
     b_c = b.value().contiguous();
-    TORCH_CHECK(b_c.dim() == 1 && b_c.size(0) == C_out, "bias must be [C_out]");
+    TORCH_CHECK(b_c.dim() == 1 && b_c.size(0) == C, "bias must be [C]");
     b_ptr = b_c.data_ptr<float>();
   }
 
-  auto y = torch::empty({N, C_out, D_out, H_out, W_out}, x.options());
+  auto y = torch::empty({N, C, Hout, Wout}, x.options());
 
   constexpr int Threads = 128;
-  constexpr int PVec = 1;
-  constexpr int OcPerBlock = 4;
-  const int64_t P_total = D_out * H_out * W_out;
+  constexpr int PVec = 2;
+  constexpr int CcPerBlock = 4;
+  const int64_t P_total = Hout * Wout;
   const int64_t PTile = Threads * PVec;
-  const int64_t Cg_out = C_out / groups;
-  const int64_t tiles_per_group = (Cg_out + OcPerBlock - 1) / OcPerBlock;
 
   dim3 block(Threads);
-  dim3 grid((unsigned)((P_total + PTile - 1) / PTile),
-            (unsigned)(groups * tiles_per_group),
-            (unsigned)N);
+  dim3 grid(
+      (unsigned)((P_total + PTile - 1) / PTile),
+      (unsigned)((C + CcPerBlock - 1) / CcPerBlock),
+      (unsigned)N
+  );
 
   cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
 
-  convtrans3d_kernel<float><<<grid, block, 0, stream>>>(
+  dwconv2d_k1_kernel<float><<<grid, block, 0, stream>>>(
       x_c.data_ptr<float>(),
       w_c.data_ptr<float>(),
       b_ptr,
       y.data_ptr<float>(),
-      (int)N, (int)C_in, (int)C_out,
-      (int)D_in, (int)H_in, (int)W_in,
-      (int)D_out, (int)H_out, (int)W_out,
-      (int)Kd, (int)Kh, (int)Kw,
-      stride_d, stride_h, stride_w,
-      pad_d, pad_h, pad_w,
-      out_pad_d, out_pad_h, out_pad_w,
-      groups
+      (int)N, (int)C, (int)H, (int)Win,
+      (int)K, (int)stride, (int)padding, (int)dilation,
+      (int)Hout, (int)Wout
   );
 
   auto err = cudaGetLastError();
-  TORCH_CHECK(err == cudaSuccess, "convtrans3d_kernel launch failed: ", cudaGetErrorString(err));
+  TORCH_CHECK(err == cudaSuccess, "dwconv2d_k1_kernel launch failed: ", cudaGetErrorString(err));
 
   return y;
 }
 """
 
-convtrans3d_ext = load_inline(
-    name="cute_convtrans3d_ext_true_fixed",
+dwconv2d_ext = load_inline(
+    name="cute_dwconv2d_k1_ext",
     cpp_sources=cuda_decl,
     cuda_sources=cuda_src,
-    functions=["convtrans3d_forward"],
+    functions=["dwconv2d_depthwise_k1_forward"],
     extra_cflags=["-O3"],
     extra_cuda_cflags=["-O3"],
     extra_include_paths=["/home/tarasaba/cutlass/include", "/home/tarasaba/cutlass/include/cute/"],
@@ -569,62 +514,57 @@ convtrans3d_ext = load_inline(
 )
 
 class ModelNew(nn.Module):
+    """
+    Depthwise 2D convolution with vertical asymmetric kernel (kernel_size x 1),
+    implemented with a single custom CUDA kernel using CuTe.
+    """
     def __init__(self,
                  in_channels: int,
-                 out_channels: int,
-                 kernel_size: tuple,
-                 stride: tuple = (1, 1, 1),
-                 padding: tuple = (0, 0, 0),
-                 output_padding: tuple = (0, 0, 0),
-                 groups: int = 1,
+                 kernel_size: int,
+                 stride: int = 1,
+                 padding: int = 0,
+                 dilation: int = 1,
                  bias: bool = False) -> None:
         super().__init__()
-        assert len(kernel_size) == 3
-        assert len(stride) == 3
-        assert len(padding) == 3
-        assert len(output_padding) == 3
-        assert out_channels % groups == 0
-        assert in_channels % groups == 0
+        assert isinstance(kernel_size, int) and kernel_size >= 1
+        assert isinstance(stride, int) and stride >= 1
+        assert isinstance(padding, int) and padding >= 0
+        assert isinstance(dilation, int) and dilation >= 1
 
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = tuple(kernel_size)
-        self.stride = tuple(stride)
-        self.padding = tuple(padding)
-        self.output_padding = tuple(output_padding)
-        self.groups = groups
+        self.in_channels = int(in_channels)
+        self.kernel_size = int(kernel_size)
+        self.stride = int(stride)
+        self.padding = int(padding)
+        self.dilation = int(dilation)
 
-        Cout_per_g = out_channels // groups
-        Kd, Kh, Kw = self.kernel_size
-        self.weight = nn.Parameter(torch.empty(in_channels, Cout_per_g, Kd, Kh, Kw))
-
+        # Depthwise: groups = in_channels, out_channels = in_channels
+        C = self.in_channels
+        K = self.kernel_size
+        # Weight shape matches PyTorch depthwise layout: [C_out, C_in/groups, Kh, Kw] with groups=C => [C,1,K,1]
+        self.weight = nn.Parameter(torch.empty(C, 1, K, 1))
         if bias:
-          self.bias = nn.Parameter(torch.empty(out_channels))
+            self.bias = nn.Parameter(torch.empty(C))
         else:
-          self.register_parameter("bias", None)
+            self.register_parameter("bias", None)
 
         self.reset_parameters()
-        self._ext = convtrans3d_ext
+        self._ext = dwconv2d_ext
 
     def reset_parameters(self):
         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
         if self.bias is not None:
-            fan_in, _ = init._calculate_fan_in_and_fan_out(self.weight)
-            bound = 1.0 / math.sqrt(fan_in) if fan_in > 0 else 0
+            fan_in = self.kernel_size  # depthwise per-channel fan_in equals kernel_size along H (Kw=1)
+            bound = 1.0 / math.sqrt(fan_in) if fan_in > 0 else 0.0
             init.uniform_(self.bias, -bound, bound)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        sd, sh, sw = self.stride
-        pd, ph, pw = self.padding
-        opd, oph, opw = self.output_padding
-        return self._ext.convtrans3d_forward(
+        return self._ext.dwconv2d_depthwise_k1_forward(
             x.contiguous(),
             self.weight.contiguous(),
             self.bias if self.bias is not None else None,
-            int(sd), int(sh), int(sw),
-            int(pd), int(ph), int(pw),
-            int(opd), int(oph), int(opw),
-            int(self.groups),
+            int(self.stride),
+            int(self.padding),
+            int(self.dilation),
         )
 ```
 
