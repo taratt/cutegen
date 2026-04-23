@@ -4,8 +4,30 @@ import os
 
 from cutgen.run import run
 from cutgen.util import write_file_with_lock
-from cutgen.config import SKXOSS_BASE_PATH, MAX_CONCURRENT_PROCESSES, MAX_DEPTH, MAX_RETRIES_PER_DEPTH
+from cutgen.config import SKXOSS_BASE_PATH, MAX_CONCURRENT_PROCESSES, MAX_DEPTH, MAX_RETRIES_PER_DEPTH, ALWAYS_OPTIMIZE_BEST
 from cutgen.node import ErrorType, Node
+
+def _extract_mean_time(t, default=999999.0):
+    """
+    Accepts:
+        float
+        int
+        dict with key 'mean'
+        None
+
+    Returns:
+        float mean time
+    """
+    if t is None:
+        return default
+
+    if isinstance(t, (int, float)):
+        return float(t)
+
+    if isinstance(t, dict):
+        return float(t.get("mean", default))
+
+    return default
 
 def _run_node_worker(node_data, code_optimize_addendum="", codegen_initial_addendum="", fix_compile_addendum="", fix_correct_addendum=""):
     try:
@@ -15,17 +37,44 @@ def _run_node_worker(node_data, code_optimize_addendum="", codegen_initial_adden
         node.metadata.setdefault("last_passed_depth", max(0, getattr(node, "depth", 0) - 1))
         node.metadata.setdefault("retries_by_depth", {})
 
+        node.metadata.setdefault("best_passed_src", node.prev_src if getattr(node, "prev_src", None) else "")
+        node.metadata.setdefault("best_passed_depth", max(0, getattr(node, "depth", 0) - 1))
+        node.metadata.setdefault("best_passed_time", 999999.0)
+        node.metadata.setdefault("best_passed_nsight_metrics", {})
+
         run(node, code_optimize_addendum=code_optimize_addendum, codegen_initial_addendum=codegen_initial_addendum, fix_compile_addendum=fix_compile_addendum, fix_correct_addendum=fix_correct_addendum)
         next_node = None
         if (node.error_type == ErrorType.PASS):
+            curr_time = _extract_mean_time(node.time)
+            best_time = _extract_mean_time(node.metadata.get("best_passed_time"))
+            if curr_time < best_time:
+                node.metadata["best_passed_src"] = node.src
+                node.metadata["best_passed_depth"] = node.depth
+                node.metadata["best_passed_time"] = getattr(node, "time", None)
+                node.metadata["best_passed_nsight_metrics"] = node.metadata.get("nsight_metrics", {})
+
+            if ALWAYS_OPTIMIZE_BEST and node.metadata.get("best_passed_src"):
+                baseline_src = node.metadata["best_passed_src"]
+                baseline_time = node.metadata.get("best_passed_time")
+                baseline_nsight = node.metadata.get("best_passed_nsight_metrics", {})
+            else:
+                baseline_src = node.src
+                baseline_time = node.time
+                baseline_nsight = node.metadata.get("nsight_metrics", {})
+
             node.metadata["last_passed_src"] = node.src
             node.metadata["last_passed_depth"] = node.depth
-            next_node = Node(ref=node.ref, src="", prev_src=node.src, ref_time=node.ref_time, save_folder_path=node.save_folder_path, depth=node.depth + 1)
-            next_node.metadata["prev_nsight_metrics"] = node.metadata.get("nsight_metrics")
+            next_node = Node(ref=node.ref, src="", prev_src=baseline_src, ref_time=node.ref_time, save_folder_path=node.save_folder_path, depth=node.depth + 1)
+            next_node.metadata["prev_nsight_metrics"] = baseline_nsight
             next_node.metadata["last_passed_src"] = node.metadata["last_passed_src"]
             next_node.metadata["last_passed_depth"] = node.metadata["last_passed_depth"]
             next_node.metadata["retries_by_depth"] = node.metadata.get("retries_by_depth", {}).copy()
-            next_node.metadata["previous_src_time"] = node.time
+            next_node.metadata["previous_src_time"] = baseline_time
+            next_node.metadata["best_passed_src"] = node.metadata.get("best_passed_src", "")
+            next_node.metadata["best_passed_depth"] = node.metadata.get("best_passed_depth", max(0, node.depth))
+            next_node.metadata["best_passed_time"] = node.metadata.get("best_passed_time", 999999.0)
+            next_node.metadata["best_passed_nsight_metrics"] = node.metadata.get("best_passed_nsight_metrics", {})
+
 
         else:
             if node.depth > 0:
@@ -53,7 +102,7 @@ def _run_node_worker(node_data, code_optimize_addendum="", codegen_initial_adden
                     next_node.metadata["retries_by_depth"] = node.metadata["retries_by_depth"].copy()
 
         return pickle.dumps(node), next_node
-        
+
     except Exception as e:
         print(f"Error running node {getattr(node, 'uuid', 'unknown')}: {e}")
         return None
