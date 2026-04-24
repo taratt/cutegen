@@ -1,14 +1,14 @@
 import os
 
-SKXOSS_BASE_PATH = os.environ.get("SKXOSS_BASE_PATH", "/home/user/cutgen") # base path for the cutgen project
+SKXOSS_BASE_PATH = os.environ.get("SKXOSS_BASE_PATH", "/home/user/cutegen-vm") # base path for the cutgen project
 BUILD_DIRECTORY_BASE = f"{SKXOSS_BASE_PATH}/build/" # base path for the build directory
 GPU_LOCK_FILE = "/tmp/gpu_flock.lock" # file for the GPU lock
 
 #INITIAL_PROMPT_FILE=SKXOSS_BASE_PATH+"/cutgen/prompts/original_initial_kernelbench_prompt.txt"
-INITIAL_PROMPT_FILE = "/home/user/cutgen/cutgen/prompts/cute_initial_kernelbench_prompt.txt"
+INITIAL_PROMPT_FILE = "/home/user/cutegen-vm/cutgen/prompts/cute_multilevel_initial_prompt.txt"
 OPTIMIZE_PROMPT_FILE=SKXOSS_BASE_PATH+"/cutgen/prompts/cute_optimized_kernelbench_prompt.txt"
-EDIT_PROMPT_FILE="/home/user/cutgen/cutgen/prompts/cute_optimized_kernelbench_prompt.txt"
-TUNE_PROMPT_FILE="/home/user/cutgen/cutgen/prompts/cute_tuning_kernelbench_prompt.txt"
+EDIT_PROMPT_FILE="/home/user/cutegen-vm/cutgen/prompts/cute_multilevel_optimization_prompt.txt"
+TUNE_PROMPT_FILE="/home/user/cutegen-vm/cutgen/prompts/cute_tuning_kernelbench_prompt.txt"
 DEBUG_PRINT = True # whether to print debug messages
 
 LOAD_MODEL_BACKOFF_TIME = 1.0 # time to wait before retrying a failed operation
@@ -35,7 +35,7 @@ MAX_RETRIES_PER_DEPTH = 0
 
 FEEDBACK_MODE = "iterative"
 USE_PROFILING = True
-PROFILING_START_DEPTH = 0
+PROFILING_START_DEPTH = 7
 NSIGHT_COMPUTE_BIN = os.environ.get("NSIGHT_COMPUTE_BIN", "/usr/local/cuda/bin/ncu")
 NSIGHT_COMPUTE_SET = "basic"
 BENCHMARK_TORCH_COMPILE = False # whether to benchmark the torch compile
