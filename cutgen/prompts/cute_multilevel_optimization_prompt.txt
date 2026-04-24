@@ -1,0 +1,219 @@
+f"""
+You're given the following CUTE/CUDA source code:
+```
+<NODE_PRV_SRC>
+```
+PYTORCH_REFERENCE_TIME: <REFERENCE_TIME>
+PREVIOUS_SOURCE_TIME: <PREVIOUS_SOURCE_TIME>
+
+Your task: Optimize this code using CUTE/CUDA.
+IMPORTANT: Implement ONLY ONE optimization attempt. Pick ONE optimization that is not already implemented.
+You must output REAL compilable code (not pseudocode) and preserve the original code structure:
+- Keep the same function names, arguments, and return types.
+- The optimized output architecture is named ModelNew with custom CUTE/CUDA kernel(s).
+- Output ONLY the new CUTE/CUDA code + torch glue code. No extra text, no explanations, no testing code.
+- Output the entire new code in ONE CODEBLOCK (wrap in ``` and ```).
+
+Before optimizing, infer what type of kernel this is:
+(A) Matrix Multiply / GEMM-like kernel (e.g., C = A @ B, A*C + A*D, batched GEMM, etc.)
+(B) Activation / Elementwise kernel (e.g., ReLU, tanh, sigmoid, GELU, add+relu, bias+relu, clamp, etc.)
+(C) Convolution kernel (e.g., 1D/2D/3D convolution, depthwise convolution, grouped convolution, pointwise convolution, spatial convolution, conv-like sliding-window operators)
+(D) Other (if none of the above fits, apply safe general GPU optimizations only)
+======================
+Fusion / multi-op guidance:
+If the code contains multiple operations in sequence (not just matmul or just convolution), still implement ONLY ONE optimization attempt.
+
+Valid fusion-oriented attempts:
+1) Fuse one existing elementwise operation into an existing kernel.
+2) Fuse two consecutive existing elementwise operations into one kernel.
+3) Fuse bias/add/scale/activation into a producer writeback when safe.
+4) Remove one intermediate tensor if it is written once and read once.
+5) If the main producer is still weak, optimize the producer using the relevant GEMM/conv/elementwise rules below instead of fusing.
+
+Low-level fusion rule:
+When fusing, avoid this pattern:
+
+    kernel1 writes tmp to global memory
+    kernel2 reads tmp from global memory
+    kernel2 writes output
+
+Prefer computing the temporary value in registers and writing only the final result:
+
+    val = producer computation
+    val = existing fused operation(s) applied in correct order
+    output = val
+
+For elementwise chains, load each input once when possible, compute all operations in registers, and store the final output once.
+
+For producer epilogues, apply bias/add/scale/activation immediately before the output store when correctness allows.
+
+Fusion safety rules:
+- Do NOT invent new operations.
+- Do NOT remove operations.
+- Do NOT change operation order unless mathematically identical.
+- Do NOT change precision.
+- Do NOT fuse normalization, softmax, pooling, or large reductions into another kernel unless the current code already does that safely.
+- If unsure, keep the existing kernel structure and apply a safe local optimization.
+
+================
+WHEN PROFILER DATA IS AVAILABLE
+
+Use profiler data as secondary evidence, not as the main optimization driver.
+
+Choose optimizations in this order:
+1) kernel-specific optimization principles
+2) missing structural optimizations
+3) strong profiler evidence
+4) minor launch or tuning adjustments
+
+Profiler data should help you:
+- confirm bottlenecks
+- break ties between plausible optimizations
+- avoid obviously bad choices
+- validate whether the current kernel structure is weak
+
+Use profiler data strongly only when it gives a clear signal, such as:
+- very high registers/thread causing low achieved occupancy
+- very high runtime despite reasonable occupancy
+- very low shared-memory use in a reuse-heavy kernel
+- clear memory-bandwidth limitation
+- obvious launch configuration problems
+- explicit profiler warnings directly related to the next optimization
+
+For GEMM and convolution kernels, structural and algorithmic decisions are usually more important than raw counters unless we already have plausible optimizations implemented.
+If the kernel is still structurally weak, prefer fixing the structure over tuning around profiler metrics.
+
+High occupancy does NOT mean the kernel is good.
+CuTe usage does NOT mean the kernel is well tiled.
+Shared-memory staging of one operand alone does NOT mean the kernel has strong reuse.
+If runtime remains high, ask whether the kernel is still fundamentally direct or structurally inefficient.
+===========================================================
+If the kernel is (A) Matrix Multiply / GEMM-like:
+Pick ONE of the following effective optimizations (only one):
+1) Threadblock-level tiling (CTA tiling for M/N/K)
+2) Warp-level tiling
+3) Thread-level tiling / vectorized loads
+4) Tensor Core mma operations (only if data types + layout allow it)
+5) Shared-memory bank conflict reduction (swizzling / layout transforms)
+6) Pipelining / multi-stage loads (cp.async if supported)
+7) Split-K (only if K dimension is very large AND reduction is bottleneck)
+8) Asynchronous loads/stores
+
+Rules for GEMM:
+- Pay close attention to matrix operand dimensions (M, N, K) and layouts/strides and how they compare to each other to deliver specific optimizations.
+- Pick the strongest optimization that matches the shapes.
+- There might be information about the matrices in comments or the reference code (such as if a matrix is symmetric etc) you can optimize only for those cases to make kernels fast but DO NOT make assumptions yourself without having provable and explicit information in the reference.
+- Do NOT change precision.
+- Do NOT use cuBLAS/cuDNN or other pre-optimized libraries.
+- Do NOT fall back to PyTorch operators for any case.
+- It is acceptable to specialize to the exact shapes listed.
+
+===========================================================
+If the kernel is (B) Activation / Elementwise:
+Matmul optimizations like tensor cores, split-K, warp tiling for M/N/K, and matrix swizzling are NOT applicable.
+Pick ONE of the following elementwise optimizations (only one):
+1) Vectorized global memory loads/stores (float4/half2/etc.) when contiguous + aligned
+2) Grid-stride loop to cover arbitrary numel efficiently
+3) Reduce kernel launch overhead: fuse simple elementwise ops already present in the code (ONLY if they already exist in the original kernel computation; do not invent new semantics)
+4) Use fast math intrinsics safely (only for tanh/sigmoid/GELU-like kernels; keep outputs correct/stable)
+5) Improve tail handling + bounds checks to avoid invalid memory accesses
+6) Minimize register pressure / unnecessary temporaries
+7) Improve occupancy by choosing a better block size (128/256/512) WITHOUT changing semantics
+
+Rules for elementwise kernels:
+- Treat the tensor as a 1D array of length L = x.numel().
+- Memory access must be coalesced.
+- Avoid using shared memory unless there is clear data reuse (elementwise usually has none).
+- Keep correct behavior for all elements, including tail elements when L is not divisible by vector width.
+- Do NOT use or fall back to PyTorch ops even for special cases.
+- Do NOT change precision.
+- It is acceptable to specialize to the exact dtype and contiguous layout if the original code already assumes it.
+
+===========================================================
+If the kernel is (C) Convolution kernel:
+
+First decide whether the current kernel is still structurally direct.
+
+Treat it as structurally direct if any of the following are true:
+- one thread computes one output, or only a very small number of outputs
+- accumulation is still dominated by nested scalar loops over input channels and kernel elements
+- neighboring outputs repeatedly reload reusable input activations from global memory
+- shared memory is used only partially and does not enable strong cooperative reuse
+- CuTe is used mainly for indexing/layout convenience rather than true tiled partitioning
+- the kernel is still far from reference performance despite local optimizations
+
+If the kernel is still structurally direct:
+DO NOT apply a micro-optimization.
+Instead, perform exactly ONE structural rewrite that moves the kernel toward a cooperative tiled implementation.
+
+Valid structural rewrites:
+1) CTA-level output/spatial tiling
+2) shared-memory staging of reusable input tiles
+3) cooperative thread computation across output tiles
+4) real CuTe tiled tensor partitioning
+5) implicit GEMM restructuring, if the convolution shape supports it
+
+If the kernel is already cooperative and tiled:
+Implement exactly ONE optimization from the list below:
+1) improve output/spatial tiling
+2) improve shared-memory reuse
+3) improve cooperative thread mapping
+4) add register blocking
+5) improve memory coalescing
+6) add pipelined staged loads
+7) add tensor-core MMA only if layout, dtype, and shape clearly support it
+
+Shape-aware rules:
+- Choose the optimization based on the actual convolution shape, not generic conv advice.
+- When input channels are very small, avoid over-investing in channel-reduction tiling.
+- When output volume is very large, prioritize output/spatial tiling and input reuse.
+- When the kernel remains direct after an earlier attempt, prefer structural rewrite or implicit GEMM over further local refinement.
+- Do not apply fancy load pipelining or buffering unless the kernel already has a strong tiled structure.
+
+Hard rules:
+- Preserve exact convolution semantics
+- Preserve stride / padding / dilation / groups behavior
+- Do NOT change precision
+- Do NOT use cuBLAS or cuDNN
+- Do NOT fall back to PyTorch operators
+- Implement exactly ONE optimization attempt
+- Prefer structural improvement over cosmetic/local optimization
+===========================================================
+If the kernel is (D) Other / unclear:
+Apply ONE safe general GPU optimization:
+- vectorized load/store OR
+- better bounds handling OR
+- grid-stride loop
+Do NOT introduce GEMM-specific assumptions.
+
+===========================================================
+Additional hard constraints:
+- Keep the given source code structure the same, including function names, arguments, return types, and extension loading style.
+- Generate complete working code that compiles.
+- Do not output multiple versions; implement exactly one optimization attempt.
+- Do not add any benchmark or test code.
+- Do not add extra commentary outside the code block.
+- Pay attention to alignment, indexing correctness, and avoiding out-of-bounds accesses.
+
+Make sure the optimized code implements the same functionality as the previous version.
+
+===========================================================
+Performance red flags that indicate a naive kernel
+
+When profiler data is available, treat the following as strong signals that the kernel
+is structurally weak:
+
+- very high duration relative to the reference
+- high registers/thread causing occupancy collapse
+- full or high occupancy but still huge runtime
+- little or no shared-memory usage in a kernel with heavy reuse potential
+- compute-heavy direct accumulation with no tensor-core/GEMM structure
+- huge grid with one-thread-per-output or tiny register blocking only
+
+Interpretation guide:
+- High occupancy does NOT mean a kernel is good.
+- CuTe usage does NOT mean the kernel is tiled.
+- Shared-memory staging of one operand alone does NOT guarantee speedup.
+- If runtime is still very high, ask whether the kernel is still fundamentally direct.
+{addendum}
+"""

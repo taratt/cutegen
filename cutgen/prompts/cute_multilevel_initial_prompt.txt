@@ -1,0 +1,588 @@
+You write custom CUDA kernels using CUTE to replace the pytorch operators in the given architecture to get speedups.
+
+Here's an example to show you the syntax of inline embedding custom CUTE/CUDA operators in torch: The example given architecture is:
+```
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class Model(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def forward(self, a, b):
+        return a + b
+
+
+def get_inputs():
+    # randomly generate input tensors based on the model architecture
+    a = torch.randn(1, 128).cuda()
+    b = torch.randn(1, 128).cuda()
+    return [a, b]
+
+
+def get_init_inputs():
+    # randomly generate tensors required for initialization based on the model architecture
+    return []
+```
+
+The example new arch with custom CUTE kernels looks like this:
+```
+import os
+import torch
+import torch.nn as nn
+from torch.utils.cpp_extension import load_inline
+
+atb_cpp_decl = r\"\"\"
+#include <torch/extension.h>
+torch::Tensor atb_gemm(torch::Tensor A, torch::Tensor B);
+\"\"\"
+
+atb_cuda_src = r\"\"\"
+#include <torch/extension.h>
+#include <cuda_runtime.h>
+#include <c10/cuda/CUDAStream.h>
+
+#include <cute/tensor.hpp>
+
+// Kernel: GEMM C = A^T * B
+template <class TA, class TB, class TC>
+__global__ static void
+gemm_device(cute::Shape<int,int,int> shape_MNK,
+            TA const* A, cute::Stride<int,int> dA,
+            TB const* B, cute::Stride<int,int> dB,
+            TC      * C, cute::Stride<int,int> dC)
+{
+  using namespace cute;
+
+  // Represent full tensors
+  Tensor mA = make_tensor(make_gmem_ptr(A), make_shape(shape_MNK[0], shape_MNK[2]), dA); // (M,K)
+  Tensor mB = make_tensor(make_gmem_ptr(B), make_shape(shape_MNK[1], shape_MNK[2]), dB); // (N,K)
+  Tensor mC = make_tensor(make_gmem_ptr(C), make_shape(shape_MNK[0], shape_MNK[1]), dC); // (M,N)
+
+  // Tile
+  auto cta_tiler = make_shape(Int<128>{}, Int<128>{}, Int<8>{});
+  auto cta_coord = make_coord(blockIdx.x, blockIdx.y, _);
+  Tensor gA = local_tile(mA, cta_tiler, cta_coord, Step<_1,X,_1>{});
+  Tensor gB = local_tile(mB, cta_tiler, cta_coord, Step<X,_1,_1>{});
+  Tensor gC = local_tile(mC, cta_tiler, cta_coord, Step<_1,_1,X>{});
+
+  // Shared memory
+  __shared__ TA smemA[128*8];
+  __shared__ TB smemB[128*8];
+  Tensor sA = make_tensor(make_smem_ptr(smemA), make_shape(Int<128>{}, Int<8>{}));
+  Tensor sB = make_tensor(make_smem_ptr(smemB), make_shape(Int<128>{}, Int<8>{}));
+
+  // Thread layouts
+  auto tA = make_layout(make_shape(Int<32>{}, Int<8>{}));
+  auto tB = make_layout(make_shape(Int<32>{}, Int<8>{}));
+  auto tC = make_layout(make_shape(Int<16>{}, Int<16>{}));
+
+  Tensor tAgA = local_partition(gA, tA, threadIdx.x);
+  Tensor tAsA = local_partition(sA, tA, threadIdx.x);
+  Tensor tBgB = local_partition(gB, tB, threadIdx.x);
+  Tensor tBsB = local_partition(sB, tB, threadIdx.x);
+
+  Tensor tCsA = local_partition(sA, tC, threadIdx.x, Step<_1,X>{});
+  Tensor tCsB = local_partition(sB, tC, threadIdx.x, Step<X,_1>{});
+  Tensor tCgC = local_partition(gC, tC, threadIdx.x, Step<_1,_1>{});
+
+  Tensor tCrC = make_tensor_like(tCgC);
+  clear(tCrC);
+
+  // Loop over K
+  int K_TILE_MAX = size<2>(tAgA);
+  for (int k_tile = 0; k_tile < K_TILE_MAX; ++k_tile) {
+    copy(tAgA(_,_,k_tile), tAsA);
+    copy(tBgB(_,_,k_tile), tBsB);
+
+    cp_async_fence();
+    cp_async_wait<0>();
+    __syncthreads();
+
+    gemm(tCsA, tCsB, tCrC);
+    __syncthreads();
+  }
+
+  // Epilogue
+  axpby(1.0f, tCrC, 0.0f, tCgC);
+}
+
+// Host wrapper
+torch::Tensor atb_gemm(torch::Tensor A, torch::Tensor B) {
+  TORCH_CHECK(A.is_cuda() && B.is_cuda(), "A and B must be CUDA tensors");
+  TORCH_CHECK(A.dim()==2 && B.dim()==2,  "A and B must be 2D");
+  TORCH_CHECK(A.scalar_type()==at::kFloat && B.scalar_type()==at::kFloat,
+              "Expect float32 tensors");
+
+  // A:[K,M], B:[K,N] → C = A^T @ B
+  int K = (int)A.size(0);
+  int M = (int)A.size(1);
+  int N = (int)B.size(1);
+  TORCH_CHECK((int)B.size(0)==K, "B.size(0) must equal K");
+
+  auto A_c = A.contiguous();
+  auto B_c = B.contiguous();
+  auto C   = torch::empty({M, N}, A.options());
+
+  auto ptrA = A_c.data_ptr<float>();
+  auto ptrB = B_c.data_ptr<float>();
+  auto ptrC = C.data_ptr<float>();
+
+  auto dA = make_stride(Int<1>{}, M);
+  auto dB = make_stride(Int<1>{}, N);
+  auto dC = make_stride(Int<1>{}, N);
+  auto shape_MNK = make_shape(M, N, K);
+
+  dim3 dimBlock(256);
+  dim3 dimGrid((M+127)/128, (N+127)/128);
+
+  cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
+  gemm_device<<<dimGrid, dimBlock, 0, stream>>>(shape_MNK, ptrA, dA, ptrB, dB, ptrC, dC);
+
+  auto err = cudaGetLastError();
+  TORCH_CHECK(err == cudaSuccess, "CUTE gemm launch failed: ", cudaGetErrorString(err));
+
+  return C;
+}
+\"\"\"
+
+cutlass_atb = load_inline(
+    name="cutlass_atb_inline",
+    cpp_sources=atb_cpp_decl,               # forward declaration (wrapper sees the symbol)
+    cuda_sources=atb_cuda_src,              # implementation lives here
+    functions=["atb_gemm"],                 # auto-generate pybind wrapper
+    # extra_include_paths=[], NO NEED TO INCLUDE EXTRA BECAUSE CUTLASS HEADERS IN PATH ALREADY
+    extra_cflags=["-O3"],
+    extra_cuda_cflags=["-O3"],              # DO NOT ADD gencode, JUST LET COMPILER TO FIND AVAILABLE ARCH, BECAUSE THIS LATER WILL BE TESTED
+    verbose=False,
+)
+
+class ModelNew(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self._ext = cutlass_atb
+
+    def forward(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+        return self._ext.atb_gemm(A, B)
+```
+Here is also a base example of a convolution kernel to show you how they are written in CuTe:
+The torch task:
+
+```
+import torch
+import torch.nn as nn
+
+class Model(nn.Module):
+    """
+    Performs a transposed 3D convolution operation with asymmetric input and kernel sizes.
+
+    Args:
+        in_channels (int): Number of channels in the input tensor.
+        out_channels (int): Number of channels produced by the convolution.
+        kernel_size (tuple): Tuple of 3 integers representing the kernel size in the form (depth, height, width).
+        stride (tuple, optional): Tuple of 3 integers representing the stride in the form (depth, height, width). Defaults to (1, 1, 1).
+        padding (tuple, optional): Tuple of 3 integers representing the padding in the form (depth, height, width). Defaults to (0, 0, 0).
+        output_padding (tuple, optional): Tuple of 3 integers representing the output padding in the form (depth, height, width). Defaults to (0, 0, 0).
+        groups (int, optional): Number of blocked connections from input channels to output channels. Defaults to 1.
+        bias (bool, optional): If `True`, adds a learnable bias to the output. Defaults to `False`.
+    """
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: tuple, stride: tuple = (1, 1, 1), padding: tuple = (0, 0, 0), output_padding: tuple = (0, 0, 0), groups: int = 1, bias: bool = False):
+        super(Model, self).__init__()
+        self.conv_transpose3d = nn.ConvTranspose3d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, output_padding=output_padding, groups=groups, bias=bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Performs the transposed 3D convolution.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, in_channels, depth_in, height_in, width_in).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (batch_size, out_channels, depth_out, height_out, width_out).
+        """
+        return self.conv_transpose3d(x)
+
+# Test code
+batch_size = 16
+in_channels = 32
+out_channels = 16
+kernel_size = (3, 5, 7)  # Asymmetric kernel size
+depth_in = 16
+height_in = 32
+width_in = 64
+
+def get_inputs():
+    x = torch.rand(batch_size, in_channels, depth_in, height_in, width_in)
+    return [x]
+
+def get_init_inputs():
+    return [in_channels, out_channels, kernel_size]  # Provide in_channels, out_channels, kernel_size for initialization
+```
+
+The example new arch with custom convolution CUTE kernels looks like this:
+```
+import math
+import torch
+import torch.nn as nn
+import torch.nn.init as init
+from torch.utils.cpp_extension import load_inline
+
+cuda_decl = r"""
+#include <torch/extension.h>
+torch::Tensor dwconv2d_depthwise_k1_forward(torch::Tensor x,
+                                            torch::Tensor w,
+                                            c10::optional<torch::Tensor> b,
+                                            int stride, int padding, int dilation);
+"""
+
+cuda_src = r"""
+#include <torch/extension.h>
+#include <cuda_runtime.h>
+#include <c10/cuda/CUDAStream.h>
+#include <cute/tensor.hpp>
+
+using namespace cute;
+
+template <typename T>
+__global__ void dwconv2d_k1_kernel(
+    const T* __restrict__ X,
+    const T* __restrict__ W,
+    const T* __restrict__ B,
+    T* __restrict__ Y,
+    int N, int C, int H, int Win,
+    int K, int stride, int padding, int dilation,
+    int Hout, int Wout)
+{
+  constexpr int Threads     = 128;
+  constexpr int PVec        = 2;
+  constexpr int CcPerBlock  = 4;
+  constexpr int KChunk      = 64;
+
+  const int tid = threadIdx.x;
+
+  // Block coordinates
+  const int n         = blockIdx.z;
+  const int c_tile    = blockIdx.y;
+  const int c_base    = c_tile * CcPerBlock;
+
+  const int P_total   = Hout * Wout;
+  const int PTile     = Threads * PVec;
+  const int p_block   = blockIdx.x * PTile;
+
+  // Memory strides
+  const int64_t sXn = (int64_t)C * H * Win;
+  const int64_t sXc = (int64_t)H * Win;
+  const int64_t sXh = (int64_t)Win;
+
+  const int64_t sYn = (int64_t)C * Hout * Wout;
+  const int64_t sYc = (int64_t)Hout * Wout;
+  const int64_t sYh = (int64_t)Wout;
+
+  // Global tensors using Cute
+  auto mX = make_tensor(
+      make_gmem_ptr(X + (int64_t)n * sXn),
+      make_shape(C, H, Win),
+      make_stride(sXc, sXh, Int<1>{})
+  );
+
+  auto mY = make_tensor(
+      make_gmem_ptr(Y + (int64_t)n * sYn),
+      make_shape(C, Hout, Wout),
+      make_stride(sYc, sYh, Int<1>{})
+  );
+
+  auto mW = make_tensor(
+      make_gmem_ptr(W),
+      make_shape(C, K),
+      make_stride(K, Int<1>{})
+  );
+
+  // Shared memory for weight chunks
+  __shared__ T sW_raw[CcPerBlock * KChunk];
+  auto sW = make_tensor(
+      make_smem_ptr(sW_raw),
+      make_shape(Int<CcPerBlock>{}, Int<KChunk>{}),
+      make_stride(Int<KChunk>{}, Int<1>{})
+  );
+
+  // Precompute p indices and (oh, ow), as well as base input indices
+  int   p_idx[PVec];
+  int   oh_arr[PVec];
+  int   ow_arr[PVec];
+  int   base_ih0[PVec];
+  int   iw_arr[PVec];
+  bool  wv_arr[PVec];
+
+  #pragma unroll
+  for (int i = 0; i < PVec; ++i) {
+    int p = p_block + tid + i * Threads;
+    p_idx[i] = p;
+
+    int oh = 0, ow = 0;
+    int b_wv = 0;
+
+    if (p < P_total) {
+      oh = p / Wout;
+      ow = p - oh * Wout;
+      int iw = ow * stride - padding;
+      b_wv = (iw >= 0 && iw < Win);
+      oh_arr[i] = oh;
+      ow_arr[i] = ow;
+      iw_arr[i] = iw;
+      base_ih0[i] = oh * stride - padding;
+      wv_arr[i] = (b_wv != 0);
+    } else {
+      oh_arr[i] = 0;
+      ow_arr[i] = 0;
+      iw_arr[i] = -1;
+      base_ih0[i] = 0;
+      wv_arr[i] = false;
+    }
+  }
+
+  // Accumulators initialized with bias if present
+  float acc[CcPerBlock][PVec];
+  #pragma unroll
+  for (int cc = 0; cc < CcPerBlock; ++cc) {
+    int c = c_base + cc;
+    float bval = 0.0f;
+    if (B != nullptr && c < C) {
+      bval = (float)B[c];
+    }
+    #pragma unroll
+    for (int i = 0; i < PVec; ++i) {
+      acc[cc][i] = bval;
+    }
+  }
+
+  for (int k0 = 0; k0 < K; k0 += KChunk) {
+    // Load weight chunk for CcPerBlock channels
+    for (int kk = tid; kk < KChunk; kk += Threads) {
+      int k_global = k0 + kk;
+
+      #pragma unroll
+      for (int cc = 0; cc < CcPerBlock; ++cc) {
+        int c = c_base + cc;
+        T wval = T(0);
+        if (c < C && k_global < K) {
+          wval = mW(c, k_global);
+        }
+        sW(cc, kk) = wval;
+      }
+    }
+    __syncthreads();
+
+    // Compute on this chunk
+    #pragma unroll
+    for (int i = 0; i < PVec; ++i) {
+      int p = p_idx[i];
+      if (p >= P_total) continue;
+
+      int iw = iw_arr[i];
+      bool wv = wv_arr[i];
+      if (!wv) continue;
+
+      int ih0 = base_ih0[i];
+
+      #pragma unroll
+      for (int kk = 0; kk < KChunk; ++kk) {
+        int k_global = k0 + kk;
+        if (k_global >= K) break;
+
+        int ih = ih0 + k_global * dilation;
+        if ((unsigned)ih >= (unsigned)H) continue;
+
+        #pragma unroll
+        for (int cc = 0; cc < CcPerBlock; ++cc) {
+          int c = c_base + cc;
+          if (c >= C) continue;
+
+          float xval = (float)mX(c, ih, iw);
+          float wval = (float)sW(cc, kk);
+          acc[cc][i] += xval * wval;
+        }
+      }
+    }
+    __syncthreads();
+  }
+
+  // Store results
+  #pragma unroll
+  for (int cc = 0; cc < CcPerBlock; ++cc) {
+    int c = c_base + cc;
+    if (c >= C) continue;
+
+    #pragma unroll
+    for (int i = 0; i < PVec; ++i) {
+      int p = p_idx[i];
+      if (p >= P_total) continue;
+      int oh = oh_arr[i];
+      int ow = ow_arr[i];
+      mY(c, oh, ow) = static_cast<T>(acc[cc][i]);
+    }
+  }
+}
+
+torch::Tensor dwconv2d_depthwise_k1_forward(torch::Tensor x,
+                                            torch::Tensor w,
+                                            c10::optional<torch::Tensor> b,
+                                            int stride, int padding, int dilation) {
+  TORCH_CHECK(x.is_cuda(), "x must be CUDA");
+  TORCH_CHECK(w.is_cuda(), "w must be CUDA");
+  if (b.has_value()) TORCH_CHECK(b.value().is_cuda(), "bias must be CUDA if provided");
+
+  TORCH_CHECK(x.scalar_type() == at::kFloat, "x must be float32");
+  TORCH_CHECK(w.scalar_type() == at::kFloat, "w must be float32");
+  if (b.has_value()) TORCH_CHECK(b.value().scalar_type() == at::kFloat, "bias must be float32");
+
+  TORCH_CHECK(x.dim() == 4, "x must be [N, C, H, W]");
+  TORCH_CHECK(w.dim() == 4, "w must be [C, 1, K, 1] for depthwise conv (groups=C)");
+
+  int64_t N   = x.size(0);
+  int64_t C   = x.size(1);
+  int64_t H   = x.size(2);
+  int64_t Win = x.size(3);
+
+  TORCH_CHECK(w.size(0) == C, "w.size(0) must equal C");
+  TORCH_CHECK(w.size(1) == 1, "w.size(1) must be 1 for depthwise");
+  TORCH_CHECK(w.size(3) == 1, "w.size(3) must be 1 for (kernel_width=1)");
+  int64_t K = w.size(2);
+
+  TORCH_CHECK(stride > 0 && dilation > 0, "stride and dilation must be > 0");
+  TORCH_CHECK(padding >= 0, "padding must be >= 0");
+
+  int64_t Hout = (H + 2 * padding - dilation * (K - 1) - 1) / stride + 1;
+  int64_t Wout = (Win + 2 * padding - dilation * (1 - 1) - 1) / stride + 1; // kw=1
+  TORCH_CHECK(Hout > 0 && Wout > 0, "Invalid output size computed");
+
+  auto x_c = x.contiguous();
+  auto w_c = w.contiguous();
+
+  torch::Tensor b_c;
+  const float* b_ptr = nullptr;
+  if (b.has_value()) {
+    b_c = b.value().contiguous();
+    TORCH_CHECK(b_c.dim() == 1 && b_c.size(0) == C, "bias must be [C]");
+    b_ptr = b_c.data_ptr<float>();
+  }
+
+  auto y = torch::empty({N, C, Hout, Wout}, x.options());
+
+  constexpr int Threads = 128;
+  constexpr int PVec = 2;
+  constexpr int CcPerBlock = 4;
+  const int64_t P_total = Hout * Wout;
+  const int64_t PTile = Threads * PVec;
+
+  dim3 block(Threads);
+  dim3 grid(
+      (unsigned)((P_total + PTile - 1) / PTile),
+      (unsigned)((C + CcPerBlock - 1) / CcPerBlock),
+      (unsigned)N
+  );
+
+  cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
+
+  dwconv2d_k1_kernel<float><<<grid, block, 0, stream>>>(
+      x_c.data_ptr<float>(),
+      w_c.data_ptr<float>(),
+      b_ptr,
+      y.data_ptr<float>(),
+      (int)N, (int)C, (int)H, (int)Win,
+      (int)K, (int)stride, (int)padding, (int)dilation,
+      (int)Hout, (int)Wout
+  );
+
+  auto err = cudaGetLastError();
+  TORCH_CHECK(err == cudaSuccess, "dwconv2d_k1_kernel launch failed: ", cudaGetErrorString(err));
+
+  return y;
+}
+"""
+
+dwconv2d_ext = load_inline(
+    name="cute_dwconv2d_k1_ext",
+    cpp_sources=cuda_decl,
+    cuda_sources=cuda_src,
+    functions=["dwconv2d_depthwise_k1_forward"],
+    extra_cflags=["-O3"],
+    extra_cuda_cflags=["-O3"],
+    extra_include_paths=["/home/tarasaba/cutlass/include", "/home/tarasaba/cutlass/include/cute/"],
+    verbose=False,
+)
+
+class ModelNew(nn.Module):
+    """
+    Depthwise 2D convolution with vertical asymmetric kernel (kernel_size x 1),
+    implemented with a single custom CUDA kernel using CuTe.
+    """
+    def __init__(self,
+                 in_channels: int,
+                 kernel_size: int,
+                 stride: int = 1,
+                 padding: int = 0,
+                 dilation: int = 1,
+                 bias: bool = False) -> None:
+        super().__init__()
+        assert isinstance(kernel_size, int) and kernel_size >= 1
+        assert isinstance(stride, int) and stride >= 1
+        assert isinstance(padding, int) and padding >= 0
+        assert isinstance(dilation, int) and dilation >= 1
+
+        self.in_channels = int(in_channels)
+        self.kernel_size = int(kernel_size)
+        self.stride = int(stride)
+        self.padding = int(padding)
+        self.dilation = int(dilation)
+
+        # Depthwise: groups = in_channels, out_channels = in_channels
+        C = self.in_channels
+        K = self.kernel_size
+        # Weight shape matches PyTorch depthwise layout: [C_out, C_in/groups, Kh, Kw] with groups=C => [C,1,K,1]
+        self.weight = nn.Parameter(torch.empty(C, 1, K, 1))
+        if bias:
+            self.bias = nn.Parameter(torch.empty(C))
+        else:
+            self.register_parameter("bias", None)
+
+        self.reset_parameters()
+        self._ext = dwconv2d_ext
+
+    def reset_parameters(self):
+        init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        if self.bias is not None:
+            fan_in = self.kernel_size  # depthwise per-channel fan_in equals kernel_size along H (Kw=1)
+            bound = 1.0 / math.sqrt(fan_in) if fan_in > 0 else 0.0
+            init.uniform_(self.bias, -bound, bound)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self._ext.dwconv2d_depthwise_k1_forward(
+            x.contiguous(),
+            self.weight.contiguous(),
+            self.bias if self.bias is not None else None,
+            int(self.stride),
+            int(self.padding),
+            int(self.dilation),
+        )
+
+===========================================================
+
+FUSION NOTE
+
+If there are a sequence of operations in forward(),
+you should try to implement them together in a fused way in the same kernel
+when it preserves correctness, to minimize memory load and stores and make the kernel more performant.
+
+Do not change the computation or operation order.
+
+===========================================================
+```
+
+Here's the architecture you need to optimize:
+```
+<REF>
+```
+Implement the architecture named Model with custom CUTE operators! Name your output architecture ModelNew, and make sure that it uses CUTE/CUDA kernels that you wrote for all of the underlying computation in forward(). Make sure that the written CUTE is correct and complete, and that it implements the requested functions. Output the new code in CODEBLOCKS (wrap in ``` and ```). Please generate real code, NOT pseudocode, make sure the code compiles and is fully functional. Just output the new model code, no other text, and NO testing code! This is very important! Generate ONLY ONE kernel for the entire torch module, not one kernel per operator.
+
