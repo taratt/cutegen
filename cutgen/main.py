@@ -18,7 +18,8 @@ if __name__ == "__main__":
                 num = int(m.group(1))
                 numbered_files.append((num, f))
 
-    target_files = [f for num, f in sorted(numbered_files) if (num <= 30 and num>=12) ][0:]
+    target_files = [f for num, f in sorted(numbered_files) if num <=60 and num>=31 ][0:]
+
     print(target_files)
     # ref = read_file("/home/tarasaba/PycharmProjects/cutgen/KernelBench/attempt_0/5_Matrix_scalar_multiplication.py")
     # nodes = [Node(ref=ref, src="", save_folder_path=f"{SKXOSS_BASE_PATH}/saved_nodes/attempt_0/5_Matrix_scalar_multiplication.py") for i in range(1)]

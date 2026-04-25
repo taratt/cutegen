@@ -1595,17 +1595,17 @@ def run_nsight_profile(
     )
     
 
-    PYTHON_BIN = "/home/user/cutgen/venv/bin/python3"
+    PYTHON_BIN = "/home/user/cutegen-vm/venv/bin/python3"
     #env = os.environ.copy()
     #venv_bin = os.path.dirname(sys.executable)
     #env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
     env = os.environ.copy()
 
 # Force exact same venv
-    env["VIRTUAL_ENV"] = "/home/user/cutgen/venv"
+    env["VIRTUAL_ENV"] = "/home/user/cutegen-vm/venv"
 
 # Put venv first in PATH
-    env["PATH"] = "/home/user/cutgen/venv/bin:/usr/local/cuda/bin:" + env.get("PATH", "")
+    env["PATH"] = "/home/user/cutegen-vm/venv/bin:/usr/local/cuda/bin:" + env.get("PATH", "")
 
 # Ensure CUDA is consistent
     env["CUDA_HOME"] = "/usr/local/cuda"
