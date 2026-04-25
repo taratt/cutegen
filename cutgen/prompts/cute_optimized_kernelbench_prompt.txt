@@ -60,7 +60,7 @@ Pick ONE of the following effective optimizations (only one):
 4) Tensor Core mma operations (only if data types + layout allow it)
 5) Shared-memory bank conflict reduction (swizzling / layout transforms)
 6) Pipelining / multi-stage loads (cp.async if supported)
-7) Split-K (only if K dimension is very large AND reduction is bottleneck)
+7) Split-K (only if K dimension is very large, make sure it is implemented)
 8) Asynchronous loads/stores
 
 Rules for GEMM:
