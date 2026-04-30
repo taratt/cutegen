@@ -13,7 +13,7 @@ import anthropic
 TOGETHER_KEY = os.environ.get("TOGETHER_API_KEY")
 DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
-OPENAI_KEY = "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"
+OPENAI_KEY = "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"
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 SGLANG_KEY = os.environ.get("SGLANG_API_KEY")  # for Local Deployment
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -21,6 +21,95 @@ SAMBANOVA_API_KEY = os.environ.get("SAMBANOVA_API_KEY")
 FIREWORKS_API_KEY = os.environ.get("FIREWORKS_API_KEY")
 PERCEPTA_API_KEY = os.environ.get("PERCEPTA_API_KEY")
 
+TOKEN_USAGE_LOG = []
+TOKEN_USAGE_CSV_PATH = os.environ.get("TOKEN_USAGE_CSV_PATH", "token_usage_log2.csv")
+CURRENT_KERNEL_NAME = None
+
+def set_current_kernel_name(name: str):
+    global CURRENT_KERNEL_NAME
+    CURRENT_KERNEL_NAME = name
+
+def extract_usage(response, server_type: str, model: str) -> dict:
+    usage = getattr(response, "usage", None)
+
+    if usage is None:
+        return {
+            "server_type": server_type,
+            "model": model,
+            "input_tokens": None,
+            "output_tokens": None,
+            "total_tokens": None,
+        }
+
+    if isinstance(usage, dict):
+        input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
+        output_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+        total_tokens = usage.get("total_tokens")
+    else:
+        input_tokens = (
+            getattr(usage, "prompt_tokens", None)
+            or getattr(usage, "input_tokens", None)
+        )
+        output_tokens = (
+            getattr(usage, "completion_tokens", None)
+            or getattr(usage, "output_tokens", None)
+        )
+        total_tokens = getattr(usage, "total_tokens", None)
+
+    if total_tokens is None and (input_tokens is not None or output_tokens is not None):
+        total_tokens = (input_tokens or 0) + (output_tokens or 0)
+
+    return {
+        "server_type": server_type,
+        "model": model,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def log_usage(response, server_type: str, model: str):
+    import csv
+    from pathlib import Path
+
+    usage_row = extract_usage(response, server_type, model)
+    usage_row["kernel"] = CURRENT_KERNEL_NAME
+    TOKEN_USAGE_LOG.append(usage_row)
+
+    path = Path(TOKEN_USAGE_CSV_PATH)
+    write_header = not path.exists() or path.stat().st_size == 0
+
+    fields = [
+        "kernel",
+        "server_type",
+        "model",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+    ]
+
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+
+        if write_header:
+            writer.writeheader()
+
+        writer.writerow(usage_row)
+
+    print(
+        f"[TOKENS] {server_type}/{model}: "
+        f"input={usage_row['input_tokens']} "
+        f"output={usage_row['output_tokens']} "
+        f"total={usage_row['total_tokens']} "
+        f"saved_to={path}"
+    )
+
+
+def save_token_usage_csv(path="token_usage_log.csv"):
+    # Kept for compatibility, but log_usage() now writes immediately.
+    print(
+        f"[TOKENS] token usage is already being appended to {TOKEN_USAGE_CSV_PATH}"
+    )
 def query_server(
     prompt: str | list[dict],  # string if normal prompt, list of dicts if chat prompt,
     system_prompt: str = "You are a helpful assistant",  # only used for chat prompts
@@ -223,6 +312,7 @@ def query_server(
                 max_tokens=max_tokens,
                 top_p=top_p,
             )
+        log_usage(response, server_type, model)
         outputs = [choice.message.content for choice in response.choices]
     elif server_type == "together":
         response = client.chat.completions.create(
