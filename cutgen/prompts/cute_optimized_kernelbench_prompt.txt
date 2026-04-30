@@ -3,6 +3,11 @@ You're given the following CUTE/CUDA source code:
 ```
 <NODE_PRV_SRC>
 ```
+
+with the following PyTorch reference code
+```
+<NODE_REF_SRC>
+```
 PYTORCH_REFERENCE_TIME: <REFERENCE_TIME>
 PREVIOUS_SOURCE_TIME: <PREVIOUS_SOURCE_TIME>
 
@@ -20,6 +25,8 @@ Before optimizing, infer what type of kernel this is:
 (C) Convolution kernel (e.g., 1D/2D/3D convolution, depthwise convolution, grouped convolution, pointwise convolution, spatial convolution, conv-like sliding-window operators)
 (D) Other (if none of the above fits, apply safe general GPU optimizations only)
 
+Your optimization choice MUST match the kernel type.
+======================
 WHEN PROFILER DATA IS AVAILABLE
 
 Use profiler data as secondary evidence, not as the main optimization driver.
@@ -47,10 +54,9 @@ Use profiler data strongly only when it gives a clear signal, such as:
 For GEMM and convolution kernels, structural and algorithmic decisions are usually more important than raw counters unless we already have plausible optimizations implemented.
 If the kernel is still structurally weak, prefer fixing the structure over tuning around profiler metrics.
 
-High occupancy does NOT mean the kernel is good.
-CuTe usage does NOT mean the kernel is well tiled.
-Shared-memory staging of one operand alone does NOT mean the kernel has strong reuse.
+
 If runtime remains high, ask whether the kernel is still fundamentally direct or structurally inefficient.
+
 ===========================================================
 If the kernel is (A) Matrix Multiply / GEMM-like:
 Pick ONE of the following effective optimizations (only one):
@@ -62,10 +68,27 @@ Pick ONE of the following effective optimizations (only one):
 6) Pipelining / multi-stage loads (cp.async if supported)
 7) Split-K (only if K dimension is very large, make sure it is implemented)
 8) Asynchronous loads/stores
+9) For GEMM-like kernels where one dimension is much smaller than the others, tile over the large output dimensions, keep the small dimension inside the CTA (unroll if small), and avoid square-GEMM or split-K strategies but make sure you implement this optimization.
+HIGH-PRIORITY GEMM OPTIMIZATION: Shared-memory operand layout for MMA/WMMA
+
+For GEMM-like kernels, treat shared-memory layout as a high-priority structural optimization, especially for B.
+
+When staging operands into shared memory:
+- Prefer layouts that match the MMA/WMMA load layout.
+- For row-major A[M,K] and row-major B[K,N], a strong default is:
+  - smA[M_tile, K_tile]
+  - smB[K_tile, N_tile]
+- Prefer contiguous/vectorized copies from global memory into shared memory, e.g. float4 or cp.async 16-byte copies.
+- Avoid manually scattering B into a transposed shared-memory layout unless the MMA instruction explicitly benefits from that layout.
+- If using WMMA, choose the shared-memory layout and the wmma::row_major / wmma::col_major tag consistently.
+- For row-major B[K,N], prefer storing B in shared memory as K_tile x N_tile and loading it as wmma::row_major when valid.
+- Add shared-memory padding/skew when needed to reduce bank conflicts, e.g. SMEM_B_STRIDE = N_TILE + SKEW.
+- This optimization should be considered before minor tuning changes such as changing block size, changing K_TILE, or changing launch parameters.
 
 Rules for GEMM:
 - Pay close attention to matrix operand dimensions (M, N, K) and layouts/strides and how they compare to each other to deliver specific optimizations.
 - Pick the strongest optimization that matches the shapes.
+- If the input matrices have a specific characteristic, use them in a way that benefits the performance. For example, if a matrix is symmetric the number of reads could be reduced.
 - There might be information about the matrices in comments or the reference code (such as if a matrix is symmetric etc) you can optimize only for those cases to make kernels fast but DO NOT make assumptions yourself without having provable and explicit information in the reference.
 - Do NOT change precision.
 - Do NOT use cuBLAS/cuDNN or other pre-optimized libraries.
