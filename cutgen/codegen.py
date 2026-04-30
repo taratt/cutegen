@@ -171,6 +171,10 @@ def codegen_edits(node: Node, addendum=""):
         "<PREVIOUS_SOURCE_TIME>",
         str(node.metadata.get("previous_src_time", "UNKNOWN"))
     )
+    prompt = prompt.replace(
+        "<NODE_REF_SRC>",
+        str(node.ref)
+    )
     if USE_PROFILING and node.depth > PROFILING_START_DEPTH:
         prompt += "Here are some profiling data that you should use to decide how to optimize the code:\n"
         prompt += build_nsight_addendum_for_node(node)
