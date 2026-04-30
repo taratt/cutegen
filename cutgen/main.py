@@ -8,6 +8,7 @@ from cutgen.config import SKXOSS_BASE_PATH
 
 LEVEL1_DIR = "/home/user/cutegen-vm/KernelBench/level2"
 SAVE_DIR_BASE = f"{SKXOSS_BASE_PATH}/saved_nodes/cute/level2"
+from cutgen.llm_api import save_token_usage_csv, set_current_kernel_name
 
 if __name__ == "__main__":
     num_prefix = re.compile(r"^(\d+)_.*\.py$")
@@ -35,4 +36,5 @@ if __name__ == "__main__":
         coordinator = Coordinator(nodes)
         coordinator.codegen_initial_addendum = f"Your task is to optimize using CUTE framework. If the operation can be implement using CUTE operators, USE CUTE instead of writting CUDA from scratch! If cute layout and tensors allow more optimization, use them. DO NOT under any circumstances generate CUTLASS templated code. The include cute location is found in /home/user/cutegen-vm/cutgen/cutlass/include/cute/. You should add this include path directly in code in load_inline. DO NOT read from environment variables. Start with generating the simplest implementation in CuTE that is correct. For convolution-like kernels, do NOT start from a naive direct one-thread-per-output kernel when output spatial dimensions are large; start from a cooperative tiled implementation in CUDA instead, but do not jump immediately to a fragile implicit-GEMM rewrite. Pay close attention to the correct convolution kernel example given to you. Notice that CUTE tuples don’t support operator[]; you must use cute::get<Idx>(...). Pay close attention to the matrix operands dimensions and how they are compared to each other and base your implementation on what suits best for those relations. If there are a sequence of operations, you can try fusing them in the kernel."
        # coordinator.code_optimize_addendum = f"You MUST attempt to use CUTE code to optimize and write correct code"
+        set_current_kernel_name(fname)
         coordinator.run()
