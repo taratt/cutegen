@@ -1,0 +1,201 @@
+f"""
+You're given the following CUTE/CUDA source code:
+```
+<NODE_PRV_SRC>
+```
+
+with the following PyTorch reference code
+```
+<NODE_REF_SRC>
+```
+PYTORCH_REFERENCE_TIME: <REFERENCE_TIME>
+PREVIOUS_SOURCE_TIME: <PREVIOUS_SOURCE_TIME>
+
+Your task: Optimize this code using CUTE/CUDA.
+IMPORTANT: Implement ONLY ONE optimization attempt. Pick ONE optimization that is not already implemented.
+You must output REAL compilable code (not pseudocode) and preserve the original code structure:
+- Keep the same function names, arguments, and return types.
+- The optimized output architecture is named ModelNew with custom CUTE/CUDA kernel(s).
+- Output ONLY the new CUTE/CUDA code + torch glue code. No extra text, no explanations, no testing code.
+- Output the entire new code in ONE CODEBLOCK (wrap in ``` and ```).
+===========================================================
+OPTIMIZATION PRINCIPLE
+===========================================================
+
+This is a multi-operation workload. Do NOT optimize it as only a GEMM, only a convolution, or only an elementwise kernel.
+
+Before choosing the CUDA optimization, infer the full forward computation as a graph:
+
+1. Identify the producer operation:
+   - linear / matmul / batched matmul
+   - convolution / depthwise convolution / grouped convolution
+   - normalization
+   - reduction
+   - elementwise chain
+   - other
+
+2. Identify all consumer operations after the producer:
+   - bias/add/scale
+   - activation
+   - clamp
+   - pooling
+   - sum/mean/max/min
+   - logsumexp
+   - reshape/view/transpose
+   - normalization
+   - other reductions
+
+3. Identify intermediate tensors:
+   - Which tensors are written to global memory?
+   - Which tensors are read only once?
+   - Which tensors can be eliminated?
+
+Prefer optimizations that reduce total memory traffic and kernel launches.
+
+===========================================================
+FIRST PRIORITY: ALGEBRAIC SIMPLIFICATION
+===========================================================
+
+Before low-level CUDA tuning, check if the forward computation can be simplified mathematically.
+
+You SHOULD apply algebraic simplification when it is exactly equivalent.
+
+Examples of valid simplifications:
+- reduction over a dimension of size 1 is identity
+- max over a singleton dimension is identity
+- mean over a singleton dimension is identity
+- logsumexp over a singleton dimension is identity
+- sum(linear(x), dim=output_dim) can become:
+      x @ sum(weight, dim=0) + sum(bias)
+- consecutive elementwise operations can be computed in registers
+- bias/add/scale/activation can be fused into the producer epilogue
+- if a temporary tensor is written once and read once, try to eliminate it
+
+Do NOT change semantics.
+Do NOT change output shape.
+Do NOT change dtype/precision.
+Do NOT change broadcasting behavior.
+Do NOT assume commutativity or associativity unless the transformation is mathematically exact for the given operation.
+
+If an operation is shape-trivial, such as max/mean/logsumexp over a size-1 dimension, simplify it.
+
+===========================================================
+SECOND PRIORITY: FUSION
+===========================================================
+
+Prefer real fusion over fake fusion.
+
+Bad pattern:
+    kernel1 writes tmp to global memory
+    kernel2 reads tmp from global memory
+    kernel2 writes output
+
+Good pattern:
+    compute producer value in registers
+    apply following operations immediately
+    write final output once
+
+Valid fusion attempts:
+1. Fuse bias/add/scale/activation into producer writeback.
+2. Fuse consecutive elementwise operations into one kernel.
+3. Fuse reduction epilogue when the reduction is small, local, or shape-trivial.
+4. Remove one intermediate tensor that is written once and read once.
+5. Collapse a producer + reduction chain when mathematically possible.
+6. Cache/precompute parameter-only reductions if valid for the timed forward path.
+
+===========================================================
+PARAMETER-ONLY REDUCTION RULE
+===========================================================
+
+If the computation repeatedly reduces only model parameters, such as:
+    sum(weight, dim=...)
+    sum(bias)
+and those reduced values are reused for every batch element, do not recompute them per output element.
+
+Good options:
+- compute the parameter reduction once in a separate kernel, then use it in the main kernel
+- cache reduced parameter tensors as buffers if the model weights are fixed during timed inference
+- fuse the reduced parameter use into the main computation
+
+Avoid recomputing a full weight reduction inside every output computation.
+
+===========================================================
+KERNEL TYPE GUIDANCE
+===========================================================
+
+After checking algebraic simplification and fusion, choose the relevant low-level strategy.
+
+(A) GEMM / Linear / Matmul-like:
+- Prefer epilogue fusion first.
+- If the output is immediately reduced, consider whether the matmul can be replaced by a smaller equivalent computation.
+- If full GEMM is still needed, use CTA tiling, shared memory, register blocking, and coalesced memory access.
+- Tensor cores are allowed only if dtype/layout/precision make them valid.
+- Do NOT use cuBLAS, cuDNN, or PyTorch operators.
+
+(B) Elementwise chains:
+- Treat tensors as flat contiguous arrays when valid.
+- Use grid-stride loops.
+- Use vectorized loads/stores when alignment and tail handling are correct.
+- Compute all elementwise operations in registers.
+- Store only the final result.
+
+(C) Reductions:
+- If reducing over a singleton dimension, remove the reduction.
+- If reducing over a small dimension, use block-level or warp-level reduction.
+- If reducing over a large dimension, use cooperative parallel reduction.
+- Do not serialize a large reduction in one thread.
+- Avoid writing large intermediate tensors just to reduce them later.
+
+(D) Convolution / Conv-like:
+- First preserve exact convolution semantics:
+  stride, padding, dilation, groups, axis order, weight layout, and output shape.
+- If followed by bias/activation/scale, fuse into writeback.
+- If followed by elementwise operations, compute them before storing.
+- If followed by reductions, check whether the reduction can be fused or algebraically simplified.
+- If the current kernel is direct and slow, prefer a structural improvement:
+  output tiling, shared-memory input reuse, cooperative computation, or implicit GEMM if shape supports it.
+- Do NOT use cuDNN or PyTorch fallback.
+
+(E) Normalization / Softmax / Pooling:
+- Do not blindly fuse complex reductions if unsafe.
+- But if the operation is over a singleton dimension, shape-trivial, or already local to each output element, simplify or fuse it.
+- Preserve numerical behavior and output shape.
+
+===========================================================
+PROFILER GUIDANCE
+===========================================================
+
+Use profiler data as secondary evidence.
+
+Optimization priority:
+1. mathematical simplification / fusion opportunity
+2. eliminating intermediates and kernel launches
+3. structural CUDA/CuTe improvement
+4. profiler-guided tuning
+5. minor block-size/register tweaks
+
+High occupancy does NOT mean the kernel is good.
+CuTe usage does NOT mean the kernel is truly tiled.
+Shared memory usage does NOT automatically mean there is useful reuse.
+If runtime is still high, ask whether the code is still writing/reading unnecessary intermediates.
+
+===========================================================
+HARD CONSTRAINTS
+===========================================================
+
+- Do NOT change the computation.
+- Do NOT remove operations unless they are mathematically identity/trivial for the given shapes.
+- Do NOT change operation order unless mathematically identical.
+- Do NOT change precision.
+- Do NOT use PyTorch ops inside forward().
+- Do NOT use cuBLAS/cuDNN/CUTLASS device operators.
+- Do NOT generate fallback paths using PyTorch.
+- Do NOT add testing code.
+- Do NOT output explanations outside the codeblock.
+- Make sure the code compiles.
+- Make sure the code returns the same shape as the reference.
+  
+Make sure the optimized code implements the same functionality as the previous version.
+
+{addendum}
+"""
