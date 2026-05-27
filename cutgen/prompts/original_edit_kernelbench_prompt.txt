@@ -1,7 +1,0 @@
-You're given the following CUTLASS/CUDA source code:
-```
-{get_numbered_lines(src_lines)}
-```
-Optimize this code.!!
-Keep the given source code structure the same, including the function names, arguments, and return types. Generate real code, NOT pseudocode, make sure the code will compile and is fully functional. follow the original structure of the code (The output architecture is named ModelNew with custom CUTLASS/CUDA kernel(s)). Do not use pre-optimized libraries like cuBLAS, do not change the precision, and do not use or fall back to pytorch operators, even for special cases! It is acceptable to specialize the code to the listed dimensions; it will only have to work for the exact shape listed. The code MUST implement the functionalities of the previous version with new optimization ideas applied, this is very important!
-Starting from the code example, output your reasoning for the edits in <reasoning></reasoning> tags. Output the edits in a codeblock ```json and ```.

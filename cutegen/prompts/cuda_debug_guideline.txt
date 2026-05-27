@@ -1,0 +1,268 @@
+                      CODING & DEBUGGING GUIDE
+===============================================================================
+
+## NON-NEGOTIABLE RULE (READ FIRST)
+
+**DO NOT change the intent of the code by making the CUDA code simpler or by using less CUDA.**
+- Do **not** “fix” bugs by replacing tiling/partitioning/TiledMMA/pipeline with a naive CUDA kernel.
+- Preferably do **not** remove async copies, TMA/cp.async, swizzles, tensor layouts just to pass correctness.
+- Do **not** fall back to cuBLAS / CUTLASS device::Gemm unless the original intent *already was* to call it.
+- Your job is to make the *same algorithm correct: repair layouts, strides, partitions, synchronization, predication, and integration wiring.
+- Do **not** change the input sizes (input tensor sizes) given in the original model.
+
+This is a correctness guide, not a “simplify to green tests” guide.
+
+===============================================================================
+
+## TABLE OF CONTENTS
+
+PART 0: LLM OPERATING PROCEDURE (How to debug without changing intent)
+PART 1: CORRECTNESS DEBUGGING CHECKLIST
+PART 2: ASYNC COPY & SYNC (cp.async / TMA / barriers / pipeline gotchas)
+PART 3: MMA / TiledMMA PITFALLS (Atom selection, partitioning, layouts)
+PART 4: MEMORY & OOM PITFALLS (Especially from redundant contiguous conversions)
+
+===============================================================================
+PART 0: LLM OPERATING PROCEDURE
+===============================
+
+When you are given incorrect CUDA code, follow this strict workflow:
+
+1) **Freeze intent**
+   * Write down (explicitly, in the response) what the code is trying to compute:
+     - inputs/outputs
+     - mathematical operation (e.g., GEMM, convolution-like, reduction, attention block, stencil, etc.)
+     - invariants that must remain true (tiling strategy, pipeline stages, shared-memory staging, etc.)
+   * Confirm what you will NOT change (see Non-Negotiable Rule above).
+
+2) **Freeze convolution semantic contract (REQUIRED for conv / conv-transpose / conv-like kernels)**
+   * Before changing any convolution kernel, explicitly freeze:
+     - the logical input layout used by the task/reference
+       - e.g. `(N,C,D,H,W)` vs `(N,C,H,W,D)`
+     - the logical weight layout used by the task/reference
+       - e.g. `(C_out, C_in/groups, Kd, Kh, Kw)`
+     - which spatial axes the kernel actually slides over
+     - which axis, if any, has kernel extent 1
+     - the exact output-shape formula for those axes
+   * Do **NOT** silently “normalize” the kernel to standard PyTorch conventions unless the task definition itself proves those conventions.
+   * If the task docstring, `get_inputs()`, reference code, and expected output shape disagree with your assumption, trust the task/reference semantics first and resolve that conflict before editing CUDA code.
+   * Required check before proposing a fix:
+     - write the expected output shape from the task definition
+     - write the output shape produced by the current kernel’s indexing/shape formula
+     - if they differ, fix semantic/layout interpretation first, not low-level CUDA details
+   * Typical failure pattern this prevents:
+     - the kernel is mathematically correct for `(N,C,D,H,W)` but the task actually uses `(N,C,H,W,D)`, or vice versa
+     - a `(K,K,1)` kernel is accidentally turned into a `(1,K,K)` kernel by changing axis interpretation
+
+3) **Localize the bug without de-optimizing**
+   * You may add:
+     - debug prints (guarded)
+     - assertions
+     - extra verification kernels
+     - temporary checksums / spot-check loads
+     - temporary extra sync for diagnosis (then remove once fixed)
+
+4) **Prove the fix**
+   * Provide:
+     - a short statement of what was wrong
+     - what changed
+     - why it preserves intent
+     - how it was validated (small cases + at least one edge case)
+
+===============================================================================
+
+PART 1: CORRECTNESS DEBUGGING CHECKLIST
+=======================================
+
+Fix in this order:
+
+A) **Shape/Layout/Stride sanity**
+1. Confirm each tensor’s real stride (from how data is produced).
+2. Spot-check a few coordinates → physical addresses → expected values.
+3. Before proposing fixes, check whether the kernel assumes contiguous linear indexing (e.g., X[i], reinterpret_cast<float4*>) and whether the wrapper forces .contiguous() or changes device; if inputs may be non-contiguous, either (A) require contiguous inputs explicitly (TORCH_CHECK + contiguity gate + scalar tail) to match the reference behavior used in this harness, or (B) implement a correct strided fallback (sizes/strides + offset computation) while keeping the optimized contiguous fast path.
+
+B) **Copy path correctness**
+4. Validate copy-only loop (gmem→smem→gmem) before looking at compute.
+5. If async is used, ensure required waits/barriers exist before first use.
+
+
+
+Debug in this order:
+
+1. Verify tensor rank:
+   - if the tensor is 2D, use 2D tilers/coords/projections
+   - if the tensor is 3D, use 3D tilers/coords/projections
+   - do not mix a 3D CTA tiler with a 2D tensor unless the projection is explicitly valid
+
+2. Apply one local fix only.
+   - Do not simultaneously change CTA tiling rank, thread layout, projection syntax, and operand layout.
+
+C) **Compute correctness**
+6. Validate partition shapes match expectations (especially K mapping for MMA).
+7. Verify accumulator dtype and any casting happens late enough.
+
+D) **Edges**
+8. Predication for partial tiles (M/N/K remainders) must be correct.
+9. Ensure stores are masked correctly (no out-of-bounds writes).
+High-frequency LLM failure modes (check before anything else):
+1) Do NOT worry or check for device mismatches. Our setup is ALWAYS single-gpu.
+2) Do NOT assume contiguous/stride/alignment unless you guard it (TORCH_CHECK or gated fast path + correct fallback).
+3) If using float4/vec fast path: gate by alignment + stride==1, and correctly handle M not divisible by 4.
+4) Do not use cuBLAS, do not change precision, do not add PyTorch ops in forward() (must be a single extension call).
+
+E) Distinguish “correct but slow” from “incorrect semantics”
+
+For convolution kernels, a kernel may be fully correct yet still be a poor implementation.
+
+Before proposing a correctness fix, classify the kernel into one of these buckets:
+
+1. **Semantic/layout bug**
+   - wrong axis order
+   - wrong weight layout
+   - wrong output-shape formula
+   - wrong interpretation of asymmetric or kernel-size-1 dimensions
+
+2. **Fragment/tile bug**
+   - wrong partition semantics
+   - wrong MMA/GEMM fragment roles
+   - wrong smem layout or epilogue masking
+
+
+Do not misdiagnose a structurally naive kernel as a correctness bug.
+If the kernel passes correctness but is still very slow, switch to performance diagnosis.
+===============================================================================
+PART 2: ASYNC COPY & SYNC
+=========================
+
+**Async correctness rules (do these before performance tuning):**
+- If you introduce `cp.async` / pipelined stages, every stage must have:
+  - a clear “produce” point (copy issued)
+  - a clear “consume” point (copy completed + visible)
+  - correct barrier/wait placement
+- Symptom mapping:
+  - stale/previous-tile values → missing wait/barrier
+  - fails only when stages > 1 → stage index math or barrier placement bug
+- For debugging you may temporarily serialize:
+  - stages = 1
+  - copy then compute
+  - extra sync
+  Then restore original pipeline once fixed.
+
+===============================================================================
+PART 3: MMA / TiledMMA PITFALLS
+===============================
+
+- Atom selection must match arch + dtype.
+- Smem layout must match what the MMA path expects (or you must transform).
+- Partitioning must align A/B fragments so K is consistent.
+- Debug rule: prove A/B fragments contain the intended values *before* blaming MMA.
+- Implicit-GEMM convolution kernels: verify the logical GEMM mapping end-to-end
+
+A kernel can compile and still be numerically wrong if the logical roles of A, B, and C are inconsistent.
+
+For implicit-GEMM conv2d/conv3d, explicitly write down:
+
+- What GEMM dimensions mean:
+  - `M` = output channels per group (or equivalent output feature dimension)
+  - `N` = output spatial positions (e.g. `OH*OW`, `OD*OH*OW`)
+  - `K` = reduction dimension (e.g. `IC_per_group * KH * KW`, or `IC_per_group * KD * KH * KW`)
+
+- What each operand means:
+  - `A(M,K)` = weights / filters
+  - `B(K,N)` = im2col-style activation tile
+  - `C(M,N)` = output tile
+
+Then prove all three levels are consistent:
+
+1. **Global-memory semantics**
+   - Confirm the flattened indexing really matches the intended GEMM mapping.
+   - For the activation/im2col operand, verify that decoding `k -> (ic, kh, kw, ...)` and `n -> (oh, ow, ...)` is correct.
+   - Check group offsets explicitly.
+
+2. **Shared-memory semantics**
+   - State the exact shared-memory tile shapes.
+   - For `A`, confirm smem is loaded as `(M_tile, K_tile)`.
+   - For `B`, confirm smem is loaded as `(K_tile, N_tile)` — this is a very common bug.
+
+
+3. **CTA/output tiling rank sanity**
+   - If output `C` is a 2D tensor `(M,N)`, then:
+     - CTA tiler must be 2D
+     - CTA coord must be 2D
+     - `local_tile(...)` / `Step<...>` rank must match that 2D structure
+   - Do not pass a 3D coord (e.g. extra `_`) to a 2D tile unless the tensor/tile/projection ranks are explicitly designed for that.
+
+4. **Implicit-GEMM conv bug hotspot: B is very often accidentally loaded as (N,K) instead of (K,N)**
+
+For implicit-GEMM convolution, the most common structural bug is:
+    - A is treated as (M,K)
+    - C is treated as (M,N)
+    - but B is accidentally loaded or partitioned as (N,K) somewhere in the pipeline
+
+    This can happen even if:
+    - the same values are present
+    - shared-memory allocation compiles
+    - some partition calls appear shape-compatible
+
+    Required check:
+    - state the shared-memory shape of B
+    - state the smem write order used to populate B
+    - state the fragment shape seen by `gemm(...)`
+
+    Do not claim the bug is fixed unless all three agree that B is logically `(K_tile, N_tile)`.
+
+    If B was changed, re-check:
+    - smem declaration
+    - smem indexing order
+    - local_partition / Step mapping
+    - resulting thread fragment role
+
+7. **Do not trust an epilogue-only fix**
+   - If max error remains nontrivial after masking stores, the bug is likely in operand mapping or fragment semantics, not just in the ragged-edge store.
+   - Edge masking can fix OOB corruption, but it cannot fix a wrong GEMM contraction.
+
+8. **Required proof before declaring success**
+   - Provide a short table or statement like:
+     - `A tile in smem: (128,8) = (M_tile,K_tile)`
+     - `B tile in smem: (8,128) = (K_tile,N_tile)`
+     - `C tile in gmem: (128,128) = (M_tile,N_tile)`
+     - `tCsA = (8,8)`, `tCsB = (8,8)`, `tCrC = (8,8)` with the correct logical roles
+   - Then state why the contraction now matches `C[m,n] += A[m,k] * B[k,n]`.
+
+If a patch fixes compilation by changing ranks, shapes, or tile declarations but does NOT re-prove the A/B/C logical roles above, treat the kernel as still suspect.
+===============================================================================
+PART 4: MEMORY & OOM PITFALLS (IMPORTANT FOR LLMs)
+=================================================
+
+### 1) The “redundant contiguous() causes OOM” failure mode
+
+Sometimes correctness-check harnesses (especially for non-matmul kernels) accidentally trigger **multiple redundant contiguous conversions** and/or large temporary buffers—causing a crash like:
+
+> Runtime error when checking correctness: **CUDA out of memory. Tried to allocate 6.00 GiB. GPU 0 has a total capacity of 23.49 GiB of which 3.76 GiB is free. Process 392481 has 12.44 GiB memory in use. Including non-PyTorch memory, this process has 6.38 GiB memory in use**
+
+**Guideline for the LLM: treat OOM during correctness-check as a bug in the *test/integration path*, not necessarily in the kernel math.**
+Common causes:
+- Calling `.contiguous()` on large tensors multiple times in a single check.
+- Creating “reference” outputs in multiple dtypes (fp32 + fp16) simultaneously.
+- Materializing giant intermediate tensors (e.g., expanded/broadcasted views) instead of using views.
+- Copying tensors to GPU repeatedly inside loops (per-test-case allocation churn).
+
+### 2) Fix OOM WITHOUT changing kernel intent
+You may do any of the following (these preserve intent):
+- **Cache contiguous buffers**: if you truly need contiguous, do it once and reuse.
+- **Avoid duplicate references**: compute reference in-place when possible; free temporaries between runs.
+- **Use views instead of materialization**: avoid `.repeat`, `.expand` followed by implicit materialization.
+- **Reduce correctness batch size**: validate on smaller sizes first, then scale.
+- **Explicitly delete temporaries + synchronize** in the harness between checks when needed.
+
+
+### 3) A quick diagnostic checklist for this exact error
+- Does the harness call `.contiguous()` more than once per input?
+- Is there an accidental `.clone()` or `.to(device)` repeated inside a loop?
+- Are there multiple large outputs kept alive (not freed) across tests?
+- Is the reference path expanding tensors (broadcast) into a full dense materialization?
+
+===============================================================================
+
+END
+===

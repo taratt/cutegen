@@ -1,9 +1,0 @@
-f"""
-You're given the following CUTLASS/CUDA source code:
-```
-<NODE_PRV_SRC>
-```
-Optimize this code.!!
-Keep the given source code structure the same, including the function names, arguments, and return types.Generate real code, NOT pseudocode, make sure the code will compile and is fully functional. Just output the new CUTLASS/CUDA + torch glue code, no other text, and NO testing code!.  Follow the original structure of the code (The optimized output architecture is named ModelNew with custom CUTLASS/CUDA kernel(s)).
-Do not use pre-optimized libraries like cuBLAS, do not change the precision, and do not use or fall back to pytorch operators, even for special cases! It is acceptable to specialize the code to the listed dimensions; it will only have to work for the exact shape listed. Output the entire new CUTLASS/CUDA kernel and the torch glue code. Output the new code in CODEBLOCKS (wrap in ``` and ```); the code MUST implement the functionalities of the previous version with new optimization ideas applied, this is very important! {addendum}
-"""

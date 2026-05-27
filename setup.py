@@ -2,10 +2,10 @@ from setuptools import setup
 
 if __name__ == "__main__":
     setup(
-        name="cutgen",
+        name="cutegen",
         version="0.0.1",
-        packages=["cutgen"],
+        packages=["cutegen"],
         package_dir={
-            "cutgen": "cutgen"
+            "cutegen": "cutegen"
         },
     )

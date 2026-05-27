@@ -3,8 +3,8 @@
 ## Setup
 Install Miniconda from https://www.anaconda.com/docs/getting-started/miniconda/install#macos-linux-installation
 ```bash
-conda create --name cutgen python=3.10
-conda activate cutgen
+conda create --name cutegen python=3.10
+conda activate cutegen
 pip install -r requirements.txt
 pip install -e .
 ```
