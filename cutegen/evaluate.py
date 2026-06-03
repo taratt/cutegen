@@ -1267,7 +1267,7 @@ def run_nsight_profile(
 # Keep build directory consistent
     env["TORCH_EXTENSIONS_DIR"] = profile_build_directory
     cmd = [
-        "sudo",
+ #       "sudo",
         "env",
         f"PATH={env['PATH']}",
         f"CUDA_HOME={env['CUDA_HOME']}",

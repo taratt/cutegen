@@ -6,8 +6,8 @@ from cutegen.coordinator import Coordinator
 
 from cutegen.config import CUTEGEN_BASE_PATH, CUTLASS_BASE_PATH, CUTLASS_INCLUDE_PATH
 
-LEVEL1_DIR = f"{CUTEGEN_BASE_PATH}/KernelBench/level2"
-SAVE_DIR_BASE = f"{CUTEGEN_BASE_PATH}/saved_nodes/cute/level2"
+LEVEL1_DIR = f"{CUTEGEN_BASE_PATH}/KernelBench/level1"
+SAVE_DIR_BASE = f"{CUTEGEN_BASE_PATH}/saved_nodes/cute/level1"
 from cutegen.llm_api import save_token_usage_csv, set_current_kernel_name
 
 if __name__ == "__main__":
@@ -19,7 +19,7 @@ if __name__ == "__main__":
                 num = int(m.group(1))
                 numbered_files.append((num, f))
 
-    target_files = [f for num, f in sorted(numbered_files) if num <=60 and num>=31 ][0:]
+    target_files = [f for num, f in sorted(numbered_files) if num <=19 and num>=19 ][0:]
 
     print(target_files)
     for fname in target_files:
