@@ -19,9 +19,10 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
 SAMBANOVA_API_KEY = os.environ.get("SAMBANOVA_API_KEY")
 FIREWORKS_API_KEY = os.environ.get("FIREWORKS_API_KEY")
 PERCEPTA_API_KEY = os.environ.get("PERCEPTA_API_KEY")
+MOONSHOT_API_KEY = os.environ.get("MOONSHOT_API_KEY")
 
 TOKEN_USAGE_LOG = []
-TOKEN_USAGE_CSV_PATH = os.environ.get("TOKEN_USAGE_CSV_PATH", "token_usage_log.csv")
+TOKEN_USAGE_CSV_PATH = os.environ.get("TOKEN_USAGE_CSV_PATH", "kimi_token_usage.csv")
 CURRENT_KERNEL_NAME = None
 
 def set_current_kernel_name(name: str):
@@ -30,6 +31,8 @@ def set_current_kernel_name(name: str):
 
 def extract_usage(response, server_type: str, model: str) -> dict:
     usage = getattr(response, "usage", None)
+    if usage is None:
+        usage = getattr(response, "usage_metadata", None)
 
     if usage is None:
         return {
@@ -41,19 +44,37 @@ def extract_usage(response, server_type: str, model: str) -> dict:
         }
 
     if isinstance(usage, dict):
-        input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
-        output_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+        input_tokens = usage.get("prompt_tokens")
+        if input_tokens is None:
+            input_tokens = usage.get("input_tokens")
+        if input_tokens is None:
+            input_tokens = usage.get("prompt_token_count")
+
+        output_tokens = usage.get("completion_tokens")
+        if output_tokens is None:
+            output_tokens = usage.get("output_tokens")
+        if output_tokens is None:
+            output_tokens = usage.get("candidates_token_count")
+
         total_tokens = usage.get("total_tokens")
+        if total_tokens is None:
+            total_tokens = usage.get("total_token_count")
     else:
-        input_tokens = (
-            getattr(usage, "prompt_tokens", None)
-            or getattr(usage, "input_tokens", None)
-        )
-        output_tokens = (
-            getattr(usage, "completion_tokens", None)
-            or getattr(usage, "output_tokens", None)
-        )
+        input_tokens = getattr(usage, "prompt_tokens", None)
+        if input_tokens is None:
+            input_tokens = getattr(usage, "input_tokens", None)
+        if input_tokens is None:
+            input_tokens = getattr(usage, "prompt_token_count", None)
+
+        output_tokens = getattr(usage, "completion_tokens", None)
+        if output_tokens is None:
+            output_tokens = getattr(usage, "output_tokens", None)
+        if output_tokens is None:
+            output_tokens = getattr(usage, "candidates_token_count", None)
+
         total_tokens = getattr(usage, "total_tokens", None)
+        if total_tokens is None:
+            total_tokens = getattr(usage, "total_token_count", None)
 
     if total_tokens is None and (input_tokens is not None or output_tokens is not None):
         total_tokens = (input_tokens or 0) + (output_tokens or 0)
@@ -104,7 +125,7 @@ def log_usage(response, server_type: str, model: str):
     )
 
 
-def save_token_usage_csv(path="token_usage_log.csv"):
+def save_token_usage_csv(path="kimi_token_usage.csv"):
     # Kept for compatibility, but log_usage() now writes immediately.
     print(
         f"[TOKENS] token usage is already being appended to {TOKEN_USAGE_CSV_PATH}"
@@ -138,6 +159,7 @@ def query_server(
     - Anthropic
     - Gemini / Google AI Studio
     - Fireworks (OpenAI compatbility)
+    - Kimi / Moonshot AI (OpenAI compatibility)
     - SGLang (Local Server)
     """
     # Select model and client based on arguments
@@ -185,6 +207,18 @@ def query_server(
         case "openai":
             client = OpenAI(api_key=OPENAI_KEY)
             model = model_name
+        case "kimi":
+            if not MOONSHOT_API_KEY:
+                raise ValueError("MOONSHOT_API_KEY must be set when server_type='kimi'")
+            client = OpenAI(
+                api_key=MOONSHOT_API_KEY,
+                base_url="https://api.moonshot.ai/v1",
+                timeout=10000000,
+                max_retries=3,
+            )
+            model = model_name
+            if model != "kimi-k3":
+                raise ValueError("Kimi provider currently supports model_name='kimi-k3'")
         case "percepta":
             client = OpenAI(api_key=PERCEPTA_API_KEY, base_url="http://3.15.208.99:4000/v1")
             model = model_name
@@ -247,8 +281,7 @@ def query_server(
             )
 
             response = model.generate_content(prompt)
-
-            return response.text
+            outputs = [response.text]
         except:
             return "Google model failed, try again"
 
@@ -311,7 +344,27 @@ def query_server(
                 max_tokens=max_tokens,
                 top_p=top_p,
             )
-        log_usage(response, server_type, model)
+        outputs = [choice.message.content for choice in response.choices]
+    elif server_type == "kimi":
+        messages = (
+            prompt
+            if isinstance(prompt, list)
+            else [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+        )
+        request_kwargs = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "max_completion_tokens": max_completion_tokens,
+        }
+        if reasoning_effort is not None:
+            # Send the field at the top level while retaining compatibility
+            # with OpenAI SDK releases that do not expose it explicitly.
+            request_kwargs["extra_body"] = {"reasoning_effort": reasoning_effort}
+        response = client.chat.completions.create(**request_kwargs)
         outputs = [choice.message.content for choice in response.choices]
     elif server_type == "together":
         response = client.chat.completions.create(
@@ -391,6 +444,9 @@ def query_server(
                 top_p=top_p,
             )
             outputs = [choice.message.content for choice in response.choices]
+
+    logged_model = model if isinstance(model, str) else model_name
+    log_usage(response, server_type, logged_model)
 
     # output processing
     if len(outputs) == 1:

@@ -20,7 +20,8 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 Some environment variables to set
 - `CUTEGEN_BASE_PATH` should be an absolute path to this repo, cutegen.
-- Relevant API keys depending on the models you use: `TOGETHER_API_KEY`, `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `SGLANG_API_KEY`, `ANTHROPIC_API_KEY`, `SAMBANOVA_API_KEY`, `FIREWORKS_API_KEY`
+- Relevant API keys depending on the models you use: `TOGETHER_API_KEY`, `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `MOONSHOT_API_KEY`, `GEMINI_API_KEY`, `SGLANG_API_KEY`, `ANTHROPIC_API_KEY`, `SAMBANOVA_API_KEY`, `FIREWORKS_API_KEY`
+- LLM input/output token counts are appended to `kimi_token_usage.csv`. Set `TOKEN_USAGE_CSV_PATH` to store the CSV elsewhere.
 - `NSIGHT_COMPUTE_BIN` should be an absolute path to the Nsight Compute (ncu) executable (e.g. export NSIGHT_COMPUTE_BIN=/usr/local/cuda/bin/ncu)
 - `CUDACXX` should be an absolute path to the nvcc compiler (e.g. `export CUDACXX=/usr/local/cuda/bin/nvcc`) 
 - `CUTLASS_BASE_PATH` and `CUTLASS_INCLUDE_PATH` should be an absolute path to the CUTLASS repo and its include directory

@@ -7,7 +7,10 @@ from cutegen.coordinator import Coordinator
 from cutegen.config import CUTEGEN_BASE_PATH, CUTLASS_BASE_PATH, CUTLASS_INCLUDE_PATH
 
 LEVEL1_DIR = f"{CUTEGEN_BASE_PATH}/KernelBench/level1"
-SAVE_DIR_BASE = f"{CUTEGEN_BASE_PATH}/saved_nodes/cute/level1"
+SAVE_DIR_BASE = os.environ.get(
+    "CUTEGEN_SAVE_DIR_BASE",
+    f"{CUTEGEN_BASE_PATH}/saved_nodes/cute/level1-delayed-profile",
+)
 from cutegen.llm_api import save_token_usage_csv, set_current_kernel_name
 
 if __name__ == "__main__":
@@ -19,7 +22,21 @@ if __name__ == "__main__":
                 num = int(m.group(1))
                 numbered_files.append((num, f))
 
-    target_files = [f for num, f in sorted(numbered_files) if num <=19 and num>=19 ][0:]
+    target_ids = {
+        103
+    }
+    target_ids_from_env = os.environ.get("CUTEGEN_KERNEL_IDS")
+    if target_ids_from_env:
+        target_ids = {
+            int(kernel_id.strip())
+            for kernel_id in target_ids_from_env.split(",")
+            if kernel_id.strip()
+        }
+    target_files = [
+        filename
+        for number, filename in sorted(numbered_files)
+        if number in target_ids
+    ]
 
     print(target_files)
     for fname in target_files:

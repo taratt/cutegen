@@ -1,6 +1,6 @@
 import os
 
-CUTEGEN_BASE_PATH = os.environ.get("CUTEGEN_BASE_PATH", "/home/user/cutegen") # base path for the cutegen project
+CUTEGEN_BASE_PATH = os.environ.get("CUTEGEN_BASE_PATH", "/home/tarasaba/PycharmProjects/cutegen_test/cutegen") # base path for the cutegen project
 BUILD_DIRECTORY_BASE = f"{CUTEGEN_BASE_PATH}/build/" # base path for the build directory
 GPU_LOCK_FILE = "/tmp/gpu_flock.lock" # file for the GPU lock
 CUTLASS_BASE_PATH = os.environ.get("CUTLASS_BASE_PATH")
@@ -34,8 +34,10 @@ MAX_DEPTH = 10 # maximum depth of the search
 MAX_RETRIES_PER_DEPTH = 0
 
 FEEDBACK_MODE = "iterative"
-USE_PROFILING = True
-PROFILING_START_DEPTH = 7
+USE_PROFILING = os.environ.get("USE_PROFILING", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+PROFILING_START_DEPTH = int(os.environ.get("PROFILING_START_DEPTH", 1))
 NSIGHT_COMPUTE_BIN = os.environ.get("NSIGHT_COMPUTE_BIN", "/usr/local/cuda/bin/ncu")
 NSIGHT_COMPUTE_SET = "basic"
 BENCHMARK_TORCH_COMPILE = False # whether to benchmark the torch compile
@@ -51,5 +53,11 @@ LLM_CONFIG_CODEGEN = [
     #LLMConfig(server_type="openai", model_name="o3-2025-04-16", temperature=0.5, is_reasoning_model=True, max_completion_tokens=100000),
     # LLMConfig(server_type="percepta", model_name="Qwen/Qwen3-32B", temperature=0.0, max_tokens=100000)
     # LLMConfig(server_type="google", model_name="gemini-2.5-pro", temperature=0.5, max_tokens=100000),
-    LLMConfig(server_type="openai", model_name="gpt-5", temperature=0.5, is_reasoning_model=True, max_completion_tokens=100000)
+    LLMConfig(
+        server_type="kimi",
+        model_name="kimi-k3",
+        is_reasoning_model=True,
+        reasoning_effort="high",
+        max_completion_tokens=32000,
+    )
 ]

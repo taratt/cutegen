@@ -1,0 +1,206 @@
+f"""
+You're given the following Triton source code:
+```
+<NODE_PRV_SRC>
+```
+
+with the following PyTorch reference code
+```
+<NODE_REF_SRC>
+```
+PYTORCH_REFERENCE_TIME: <REFERENCE_TIME>
+PREVIOUS_SOURCE_TIME: <PREVIOUS_SOURCE_TIME>
+
+Your task: Optimize this code using Triton.
+IMPORTANT: Implement ONLY ONE optimization attempt. Pick ONE optimization that is not already implemented.
+You must output REAL compilable code (not pseudocode) and preserve the original code structure:
+- Keep the same function names, arguments, and return types.
+- The optimized output architecture is named ModelNew with custom Triton kernel(s).
+- Output ONLY the new Triton code + torch glue code. No extra text, no explanations, no testing code.
+- Output the entire new code in ONE CODEBLOCK (wrap in ``` and ```).
+
+Before optimizing, infer what type of kernel this is:
+(A) Matrix Multiply / GEMM-like kernel (e.g., C = A @ B, A*C + A*D, batched GEMM, etc.)
+(B) Activation / Elementwise kernel (e.g., ReLU, tanh, sigmoid, GELU, add+relu, bias+relu, clamp, etc.)
+(C) Convolution kernel (e.g., 1D/2D/3D convolution, depthwise convolution, grouped convolution, pointwise convolution, spatial convolution, conv-like sliding-window operators)
+(D) Other (if none of the above fits, apply safe general GPU optimizations only)
+
+Your optimization choice MUST match the kernel type.
+======================
+WHEN PROFILER DATA IS AVAILABLE
+
+Use profiler data as secondary evidence, not as the main optimization driver.
+
+Choose optimizations in this order:
+1) kernel-specific optimization principles
+2) missing structural optimizations
+3) strong profiler evidence
+4) minor launch or tuning adjustments
+
+Profiler data should help you:
+- confirm bottlenecks
+- break ties between plausible optimizations
+- avoid obviously bad choices
+- validate whether the current kernel structure is weak
+
+Use profiler data strongly only when it gives a clear signal, such as:
+- very high registers/thread causing low achieved occupancy
+- very high runtime despite reasonable occupancy
+- very low shared-memory use in a reuse-heavy kernel
+- clear memory-bandwidth limitation
+- obvious launch configuration problems
+- explicit profiler warnings directly related to the next optimization
+
+For GEMM and convolution kernels, structural and algorithmic decisions are usually more important than raw counters unless we already have plausible optimizations implemented.
+If the kernel is still structurally weak, prefer fixing the structure over tuning around profiler metrics.
+
+
+If runtime remains high, ask whether the kernel is still fundamentally direct or structurally inefficient.
+
+===========================================================
+If the kernel is (A) Matrix Multiply / GEMM-like:
+Pick ONE of the following effective optimizations (only one):
+1) Program-level tiling (output tiling for M/N/K)
+2) Warp-level decomposition / choosing an appropriate num_warps
+3) Tensor/block-level tiling / vectorized contiguous loads
+4) Tensor Core operations through tl.dot (only if data types + layout allow it)
+5) Shared-memory / operand-layout conflict reduction through better tiled layouts and access patterns
+6) Pipelining / multi-stage loads (use Triton's software-pipelining mechanisms such as num_stages when supported)
+7) Split-K (only if K dimension is very large, make sure it is implemented)
+8) Asynchronous / pipelined memory movement when supported by Triton/compiler lowering
+9) For GEMM-like kernels where one dimension is much smaller than the others, tile over the large output dimensions, keep the small dimension inside the program tile (unroll if small), and avoid square-GEMM or split-K strategies but make sure you implement this optimization.
+HIGH-PRIORITY GEMM OPTIMIZATION: Operand tile layout for tl.dot
+
+For GEMM-like kernels, treat operand tile layout as a high-priority structural optimization, especially for B.
+
+When staging/organizing operands for matrix multiplication:
+- Prefer layouts that match tl.dot operand expectations and produce efficient compiler lowering.
+- For row-major A[M,K] and row-major B[K,N], a strong default is:
+  - A tile shaped [M_tile, K_tile]
+  - B tile shaped [K_tile, N_tile]
+- Prefer contiguous/coalesced block loads from global memory using tl.load with aligned, regular offsets.
+- Avoid manually transposing/scattering B unless the tl.dot access pattern or compiler lowering explicitly benefits from that layout.
+- Choose tile shapes, strides, and tl.trans/layout transformations consistently with tl.dot.
+- For row-major B[K,N], prefer keeping the logical B tile as K_tile x N_tile when valid.
+- Adjust tile shapes/layouts when needed to avoid inefficient memory access or shared-memory bank conflicts in compiler-generated staging.
+- This optimization should be considered before minor tuning changes such as changing num_warps, changing K_TILE, or changing launch parameters.
+
+Rules for GEMM:
+- Pay close attention to matrix operand dimensions (M, N, K) and layouts/strides and how they compare to each other to deliver specific optimizations.
+- Pick the strongest optimization that matches the shapes.
+- If the input matrices have a specific characteristic, use them in a way that benefits the performance. For example, if a matrix is symmetric the number of reads could be reduced.
+- There might be information about the matrices in comments or the reference code (such as if a matrix is symmetric etc) you can optimize only for those cases to make kernels fast but DO NOT make assumptions yourself without having provable and explicit information in the reference.
+- Do NOT change precision.
+- Do NOT use cuBLAS/cuDNN or other pre-optimized libraries.
+- Do NOT fall back to PyTorch operators for any case.
+- It is acceptable to specialize to the exact shapes listed.
+
+===========================================================
+If the kernel is (B) Activation / Elementwise:
+Matmul optimizations like tensor cores, split-K, warp tiling for M/N/K, and matrix swizzling are NOT applicable.
+Pick ONE of the following elementwise optimizations (only one):
+1) Vectorized/coalesced global memory loads/stores using tl.load/tl.store over contiguous blocks when alignment/layout allow it
+2) Program/block-stride coverage of arbitrary numel efficiently
+3) Reduce kernel launch overhead: fuse simple elementwise ops already present in the code (ONLY if they already exist in the original kernel computation; do not invent new semantics)
+4) Use fast math operations safely (only for tanh/sigmoid/GELU-like kernels; keep outputs correct/stable)
+5) Improve masking + tail handling to avoid invalid memory accesses
+6) Minimize register pressure / unnecessary temporaries
+7) Improve occupancy by choosing a better block size / num_warps WITHOUT changing semantics
+
+Rules for elementwise kernels:
+- Treat the tensor as a 1D array of length L = x.numel().
+- Memory access must be coalesced.
+- Avoid forcing shared-memory staging unless there is clear data reuse (elementwise usually has none).
+- Keep correct behavior for all elements, including tail elements when L is not divisible by the block/vector width.
+- Do NOT use or fall back to PyTorch ops even for special cases.
+- Do NOT change precision.
+- It is acceptable to specialize to the exact dtype and contiguous layout if the original code already assumes it.
+
+===========================================================
+If the kernel is (C) Convolution kernel:
+
+First decide whether the current kernel is still structurally direct.
+
+Treat it as structurally direct if any of the following are true:
+- one program instance computes one output, or only a very small number of outputs
+- accumulation is still dominated by nested scalar loops over input channels and kernel elements
+- neighboring outputs repeatedly reload reusable input activations from global memory
+- compiler-generated shared-memory staging is used only partially and does not enable strong cooperative reuse
+- Triton is used mainly for indexing convenience rather than true tiled tensor/program partitioning
+- the kernel is still far from reference performance despite local optimizations
+
+If the kernel is still structurally direct:
+DO NOT apply a micro-optimization.
+Instead, perform exactly ONE structural rewrite that moves the kernel toward a cooperative tiled implementation.
+
+Valid structural rewrites:
+1) program-level output/spatial tiling
+2) tiled staging/reuse of reusable input regions
+3) cooperative tensor computation across output tiles
+4) real Triton tiled tensor/program partitioning
+5) implicit GEMM restructuring, if the convolution shape supports it
+
+If the kernel is already cooperative and tiled:
+Implement exactly ONE optimization from the list below:
+1) improve output/spatial tiling
+2) improve shared-memory / staged-data reuse
+3) improve program/warp mapping
+4) add register/tensor blocking
+5) improve memory coalescing
+6) add pipelined staged loads using appropriate num_stages / software pipelining
+7) add tensor-core tl.dot only if layout, dtype, and shape clearly support it
+
+Shape-aware rules:
+- Choose the optimization based on the actual convolution shape, not generic conv advice.
+- When input channels are very small, avoid over-investing in channel-reduction tiling.
+- When output volume is very large, prioritize output/spatial tiling and input reuse.
+- When the kernel remains direct after an earlier attempt, prefer structural rewrite or implicit GEMM over further local refinement.
+- Do not apply fancy load pipelining or buffering unless the kernel already has a strong tiled structure.
+
+Hard rules:
+- Preserve exact convolution semantics
+- Preserve stride / padding / dilation / groups behavior
+- Do NOT change precision
+- Do NOT use cuBLAS or cuDNN
+- Do NOT fall back to PyTorch operators
+- Implement exactly ONE optimization attempt
+- Prefer structural improvement over cosmetic/local optimization
+===========================================================
+If the kernel is (D) Other / unclear:
+Apply ONE safe general GPU optimization:
+- vectorized/coalesced load/store OR
+- better masking/bounds handling OR
+- program/block-stride coverage
+Do NOT introduce GEMM-specific assumptions.
+
+===========================================================
+Additional hard constraints:
+- Keep the given source code structure the same, including function names, arguments, return types, and extension/loading style.
+- Generate complete working code that compiles.
+- Do not output multiple versions; implement exactly one optimization attempt.
+- Do not add any benchmark or test code.
+- Do not add extra commentary outside the code block.
+- Pay attention to alignment, indexing correctness, masks, and avoiding out-of-bounds accesses.
+
+Make sure the optimized code implements the same functionality as the previous version.
+
+===========================================================
+Performance red flags that indicate a naive kernel
+
+When profiler data is available, treat the following as strong signals that the kernel
+is structurally weak:
+
+- very high duration relative to the reference
+- high registers/thread causing occupancy collapse
+- full or high occupancy but still huge runtime
+- little or no shared-memory/staged-data reuse in a kernel with heavy reuse potential
+- compute-heavy direct accumulation with no tensor-core/GEMM structure
+- huge grid with one-program-per-output or tiny blocking only
+
+Interpretation guide:
+- High occupancy does NOT mean a kernel is good.
+- Triton usage does NOT mean the kernel is tiled well.
+- Staging/reusing one operand alone does NOT guarantee speedup.
+- If runtime is still very high, ask whether the kernel is still fundamentally direct.
+{addendum}
+"""
