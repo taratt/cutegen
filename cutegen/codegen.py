@@ -145,9 +145,26 @@ def codegen_optimize_original(node: Node, addendum=""):
     with open(OPTIMIZE_PROMPT_FILE, "r") as file:
         optimize_prompt = file.read()
     prompt = optimize_prompt.replace("<NODE_PRV_SRC>", node.prev_src)
-    src = llm_server(prompt)
-    src = parse_code_and_edit(src)
-    return src
+    prompt = prompt.replace("<REFERENCE_TIME>", str(node.ref_time or "UNKNOWN"))
+    prompt = prompt.replace(
+        "<PREVIOUS_SOURCE_TIME>",
+        str(node.metadata.get("previous_src_time", "UNKNOWN")),
+    )
+    prompt = prompt.replace("<NODE_REF_SRC>", node.ref)
+    if "<OPTIMIZATION_ADDENDUM>" in prompt:
+        prompt = prompt.replace("<OPTIMIZATION_ADDENDUM>", addendum)
+    else:
+        prompt += addendum
+    if USE_PROFILING and node.depth > PROFILING_START_DEPTH:
+        prompt += (
+            "\nHere is profiler data to use as supporting evidence:\n"
+            + build_nsight_addendum_for_node(node)
+        )
+    llm_response = llm_server(prompt)
+    return extract_first_code(
+        llm_response,
+        code_language_types=["python", "ptx", "cpp", "c", ""],
+    )
 
 
 def codegen_edits(node: Node, addendum=""):

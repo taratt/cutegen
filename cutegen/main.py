@@ -4,12 +4,17 @@ from cutegen.node import Node
 from cutegen.util import read_file, fetch_kernelbench_problem_ref
 from cutegen.coordinator import Coordinator
 
-from cutegen.config import CUTEGEN_BASE_PATH, CUTLASS_BASE_PATH, CUTLASS_INCLUDE_PATH
+from cutegen.config import (
+    CUTEGEN_BASE_PATH,
+    CUTLASS_BASE_PATH,
+    CUTLASS_INCLUDE_PATH,
+    KERNEL_BACKEND,
+)
 
 LEVEL1_DIR = f"{CUTEGEN_BASE_PATH}/KernelBench/level1"
 SAVE_DIR_BASE = os.environ.get(
     "CUTEGEN_SAVE_DIR_BASE",
-    f"{CUTEGEN_BASE_PATH}/saved_nodes/cute/level1-delayed-profile",
+    f"{CUTEGEN_BASE_PATH}/saved_nodes/{KERNEL_BACKEND}/level1-delayed-profile",
 )
 from cutegen.llm_api import save_token_usage_csv, set_current_kernel_name
 
@@ -23,7 +28,11 @@ if __name__ == "__main__":
                 numbered_files.append((num, f))
 
     target_ids = {
-        103
+        1, 4, 9, 102,
+        21, 22, 88,
+        54, 55, 58, 59, 80, 83, 103,
+        33, 40, 49, 53,
+        99,
     }
     target_ids_from_env = os.environ.get("CUTEGEN_KERNEL_IDS")
     if target_ids_from_env:
@@ -45,8 +54,27 @@ if __name__ == "__main__":
         save_folder = os.path.join(SAVE_DIR_BASE, fname)
 
         nodes = [Node(ref=ref, src="", save_folder_path=save_folder)]
+        nodes[0].metadata["kernel_backend"] = KERNEL_BACKEND
         coordinator = Coordinator(nodes)
-        coordinator.codegen_initial_addendum = f"Your task is to optimize using CUTE framework. If the operation can be implement using CUTE operators, USE CUTE instead of writting CUDA from scratch! If cute layout and tensors allow more optimization, use them. DO NOT under any circumstances generate CUTLASS templated code. The include cute location is found in {CUTLASS_INCLUDE_PATH}/cute/. You should add this include path directly in code in load_inline. DO NOT read from environment variables. Start with generating the simplest implementation in CuTE that is correct. For convolution-like kernels, do NOT start from a naive direct one-thread-per-output kernel when output spatial dimensions are large; start from a cooperative tiled implementation in CUTE instead, but do not jump immediately to a fragile implicit-GEMM rewrite. Pay close attention to the correct convolution kernel example given to you. Notice that CUTE tuples don’t support operator[]; you must use cute::get<Idx>(...). Pay close attention to the matrix operands dimensions and how they are compared to each other and base your implementation on what suits best for those relations. If there are a sequence of operations, you can try fusing them in the kernel."
+        if KERNEL_BACKEND == "ptx":
+            coordinator.codegen_initial_addendum = (
+                "Use only PTX loaded through cutegen.ptx_runtime.PtxModule. "
+                "Preserve the validate_generated_code hook and do not emit CUDA C++."
+            )
+        elif KERNEL_BACKEND == "cute":
+            coordinator.codegen_initial_addendum = (
+                f"Use CUTE headers from {CUTLASS_INCLUDE_PATH}/cute/ and do not "
+                "generate CUTLASS templated code."
+            )
+        else:
+            coordinator.codegen_initial_addendum = (
+                "Your task is to optimize using CUDA. DO NOT under any "
+                "circumstances generate CUTLASS templated code. Pay close "
+                "attention to the matrix operands dimensions and how they are "
+                "compared to each other and base your implementation on what "
+                "suits best for those relations. If there are a sequence of "
+                "operations, you can try fusing them in the kernel."
+            )
        # coordinator.code_optimize_addendum = f"You MUST attempt to use CUTE code to optimize and write correct code"
         set_current_kernel_name(fname)
         coordinator.run()

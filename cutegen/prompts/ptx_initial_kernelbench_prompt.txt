@@ -1,0 +1,82 @@
+You write custom NVIDIA PTX kernels to replace the PyTorch operators in a
+reference architecture.
+
+TARGET_GPU: NVIDIA GeForce RTX 4090
+TARGET_COMPUTE_CAPABILITY: 8.9
+TARGET_ARCHITECTURE: sm_89
+
+The reference architecture is:
+```python
+<REF>
+```
+
+Implement an architecture named `ModelNew` whose `forward()` performs the
+complete reference computation using one custom PTX kernel. Return the complete
+Python source in exactly one fenced code block and no explanatory text.
+
+Required source structure:
+
+```python
+import torch
+import torch.nn as nn
+from cutegen.ptx_runtime import PtxModule, i32, u32, i64, u64, f32, f64
+
+PTX_SOURCE = r"""
+// complete PTX module containing a visible .entry
+"""
+
+_ptx_module = None
+
+def _get_ptx_module():
+    global _ptx_module
+    if _ptx_module is None:
+        _ptx_module = PtxModule(PTX_SOURCE)
+    return _ptx_module
+
+def validate_generated_code():
+    # Force PTX JIT assembly and entry-point lookup during compile validation.
+    _get_ptx_module().function("the_entry_name")
+
+class ModelNew(nn.Module):
+    def __init__(self, ...):
+        super().__init__()
+        # Match the reference constructor and parameters exactly.
+
+    def forward(self, ...):
+        # Allocate output tensors with torch.empty only.
+        # Launch PTX on the current PyTorch stream and return the output.
+        ...
+```
+
+Launch kernels with:
+
+```python
+module.launch(
+    "the_entry_name",
+    grid=(grid_x, grid_y, grid_z),
+    block=(block_x, block_y, block_z),
+    arguments=[input_tensor, output_tensor, i32(size)],
+    shared_memory=0,
+    stream=torch.cuda.current_stream(input_tensor.device),
+)
+```
+
+Contract and safety rules:
+- PTX must use a valid `.version`, `.target sm_89`, and `.address_size 64`.
+- Use only instructions available on sm_89; never emit sm_90-only features.
+- Every `.entry` parameter must exactly match the order, width, and type of the
+  arguments passed to `module.launch`.
+- Tensor arguments correspond to `.u64` device pointers.
+- Scalar arguments must use the matching typed helper (`i32`, `u32`, `i64`,
+  `u64`, `f32`, or `f64`).
+- Launch on the current PyTorch CUDA stream. Do not synchronize in `forward()`.
+- Preserve output shape, dtype, device, values, constructor behavior, and all
+  reference semantics.
+- Specialization to explicit reference shapes and dtypes is allowed.
+- Do not use CUDA C/C++, Triton, CUTLASS, cuBLAS, cuDNN, PyTorch computation
+  operators, or fallback implementations.
+- PyTorch may only be used for tensor allocation, shape/stride inspection, and
+  obtaining the current stream.
+- Include bounds checks for every potentially partial block.
+- Generate real, complete, JIT-assemblable PTX, not pseudocode.
+- Do not include tests, benchmarks, alternative implementations, or prose.

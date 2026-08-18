@@ -24,8 +24,8 @@ DEVICE_INDEX = __DEVICE_INDEX__
 SEED = __SEED__
 NUM_WARMUPS = __NUM_WARMUPS__
 NUM_ITERS = __NUM_ITERS__
-REF_SRC = """__REF_SRC__"""
-GEN_SRC = """__GEN_SRC__"""
+REF_SRC = __REF_SRC_REPR__
+GEN_SRC = __GEN_SRC_REPR__
 PREBUILT_SO_FILES = __PREBUILT_SO_FILES__
 def set_seed(seed: int):
     random.seed(seed)
@@ -141,11 +141,13 @@ def _load_prebuilt_extension(so_files):
 def load_custom_model(gen_src: str, context: dict, build_dir: str):
     os.environ["TORCH_EXTENSIONS_DIR"] = build_dir
 
-    if not PREBUILT_SO_FILES:
-        raise RuntimeError(f"No prebuilt .so files were passed into profiler.py")
-
-    patched_src = _patch_gen_src_to_use_prebuilt_modules(gen_src)
-    prebuilt_exts = _load_prebuilt_extension(PREBUILT_SO_FILES)
+    if PREBUILT_SO_FILES:
+        patched_src = _patch_gen_src_to_use_prebuilt_modules(gen_src)
+        prebuilt_exts = _load_prebuilt_extension(PREBUILT_SO_FILES)
+    else:
+        # PTX sources use cutegen.ptx_runtime and do not build a Python .so.
+        patched_src = gen_src
+        prebuilt_exts = []
 
     wrapped_src = (
         "import os\n"

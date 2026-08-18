@@ -74,6 +74,7 @@ def _run_node_worker(node_data, code_optimize_addendum="", codegen_initial_adden
             next_node.metadata["best_passed_depth"] = node.metadata.get("best_passed_depth", max(0, node.depth))
             next_node.metadata["best_passed_time"] = node.metadata.get("best_passed_time", 999999.0)
             next_node.metadata["best_passed_nsight_metrics"] = node.metadata.get("best_passed_nsight_metrics", {})
+            next_node.metadata["kernel_backend"] = node.metadata.get("kernel_backend", "unknown")
 
 
         else:
@@ -100,6 +101,7 @@ def _run_node_worker(node_data, code_optimize_addendum="", codegen_initial_adden
                     next_node.metadata["last_passed_src"] = last_src
                     next_node.metadata["last_passed_depth"] = last_depth
                     next_node.metadata["retries_by_depth"] = node.metadata["retries_by_depth"].copy()
+                    next_node.metadata["kernel_backend"] = node.metadata.get("kernel_backend", "unknown")
 
         return pickle.dumps(node), next_node
 

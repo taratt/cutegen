@@ -1,5 +1,5 @@
-f"""
-You're given the following PTX source code:
+You're given the following complete Python `ModelNew` source containing an
+embedded PTX module and `cutegen.ptx_runtime` launch glue:
 ```
 <NODE_PRV_SRC>
 ```
@@ -11,10 +11,17 @@ with the following PyTorch reference code
 PYTORCH_REFERENCE_TIME: <REFERENCE_TIME>
 PREVIOUS_SOURCE_TIME: <PREVIOUS_SOURCE_TIME>
 
-Your task: Optimize this code using PTX.
+TARGET_GPU: NVIDIA GeForce RTX 4090
+TARGET_COMPUTE_CAPABILITY: 8.9
+TARGET_ARCHITECTURE: sm_89
+
+All generated PTX must be valid for NVIDIA sm_89.
+Do NOT use instructions, instruction variants, memory mechanisms, or synchronization features that require sm_90 or newer architectures.
+
+Your task: Optimize this code using PTX targeting NVIDIA sm_89 (RTX 4090).
 IMPORTANT: Implement ONLY ONE optimization attempt. Pick ONE optimization that is not already implemented.
-You must output REAL compilable PTX code (not pseudocode) and preserve the original code structure:
-- Keep the same externally visible function names, arguments, and return behavior.
+You must output REAL PTX code (not pseudocode) that can be assembled or JIT-compiled for NVIDIA sm_89, and preserve the original code structure:
+- Keep the same externally visible function names, arguments, and return types/behavior.
 - The optimized output architecture is named ModelNew with custom PTX kernel(s).
 - Output ONLY the new PTX code + torch glue code. No extra text, no explanations, no testing code.
 - Output the entire new code in ONE CODEBLOCK (wrap in ``` and ```).
@@ -64,8 +71,8 @@ Pick ONE of the following effective optimizations (only one):
 2) Warp-level tiling
 3) Thread-level tiling / vectorized loads
 4) Tensor Core mma operations (only if data types + layout allow it)
-5) Shared-memory bank conflict reduction (padding / swizzling / layout transforms)
-6) Pipelining / multi-stage loads (cp.async if supported)
+5) Shared-memory bank conflict reduction (swizzling / layout transforms)
+6) Pipelining / multi-stage loads using sm_89-supported cp.async instructions when applicable
 7) Split-K (only if K dimension is very large, make sure it is implemented)
 8) Asynchronous loads/stores
 9) For GEMM-like kernels where one dimension is much smaller than the others, tile over the large output dimensions, keep the small dimension inside the CTA (unroll if small), and avoid square-GEMM or split-K strategies but make sure you implement this optimization.
@@ -147,7 +154,7 @@ Implement exactly ONE optimization from the list below:
 3) improve cooperative thread mapping
 4) add register blocking
 5) improve memory coalescing
-6) add pipelined staged loads using cp.async when supported
+6) add pipelined staged loads using sm_89-supported cp.async instructions when applicable
 7) add tensor-core mma only if layout, dtype, and shape clearly support it
 
 Shape-aware rules:
@@ -176,12 +183,18 @@ Do NOT introduce GEMM-specific assumptions.
 ===========================================================
 Additional hard constraints:
 - Keep the given source code structure the same, including externally visible function names, arguments, return behavior, and extension loading style.
+- Preserve the `PtxModule` launch glue and `validate_generated_code()` hook.
+- The source resulting from the requested edits must remain complete and contain
+  `ModelNew`, `PTX_SOURCE`, and runtime glue; never replace it with a standalone
+  `.ptx` file.
 - Generate complete working code that assembles/loads correctly.
 - Do not output multiple versions; implement exactly one optimization attempt.
 - Do not add any benchmark or test code.
-- Do not add extra commentary outside the code block.
+- Follow the requested source or JSON-edit response format exactly, without
+  extra commentary.
 - Pay attention to alignment, address calculation, predicate correctness, register usage, and avoiding out-of-bounds accesses.
-
+- Generate complete working PTX that assembles/loads correctly for sm_89.
+- Use a PTX ISA version and .target declaration compatible with sm_89 and the available CUDA toolchain.
 Make sure the optimized code implements the same functionality as the previous version.
 
 ===========================================================
@@ -202,5 +215,4 @@ Interpretation guide:
 - PTX usage does NOT mean the kernel is tiled.
 - Shared-memory staging of one operand alone does NOT guarantee speedup.
 - If runtime is still very high, ask whether the kernel is still fundamentally direct.
-{addendum}
-"""
+<OPTIMIZATION_ADDENDUM>

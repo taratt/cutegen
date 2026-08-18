@@ -2,7 +2,13 @@ import random
 import json
 
 from cutegen.node import Node
-from cutegen.config import LLM_CONFIG_CODEGEN, COMPILE_LOG_CHARS, LLM_CONFIG_CODEGEN, CUTEGEN_BASE_PATH
+from cutegen.config import (
+    CUTEGEN_BASE_PATH,
+    LLM_CONFIG_CODEGEN,
+    COMPILE_LOG_CHARS,
+    DEBUG_GUIDE_FILE,
+    KERNEL_BACKEND,
+)
 from cutegen.llm_api import create_llm_server_from_config
 from cutegen.util import extract_first_code, read_file, get_numbered_lines, src_to_lines, lines_to_src, debug_print
 from cutegen.code_editor import code_edit_apply_patches
@@ -20,7 +26,7 @@ The reference code, which you can use to reason about the intended operation, is
 ```
 {node.ref}
 Reason about what is the underlying issue. Generate some useful suggestions for fixing the compile error; here's an doc that might have useful information:
-{read_file(CUTEGEN_BASE_PATH + "/cutegen/prompts/debug_guideline.txt")}
+{read_file(DEBUG_GUIDE_FILE)}
 """
     llm_response = llm_server(prompt)
     return llm_response
@@ -38,7 +44,7 @@ The reference code, which you can use to reason about the intended operation, is
 ```
 {node.ref}
 Generate some useful suggestions for fixing the correctness error; here's a doc that might have useful information:
-{read_file(CUTEGEN_BASE_PATH + "/cutegen/prompts/debug_guideline.txt")}
+{read_file(DEBUG_GUIDE_FILE)}
 """
     llm_response = llm_server(prompt)
     return llm_response
@@ -49,14 +55,15 @@ def _fix_compile(node: Node, addendum="", retrieve=False):
         suggestions = get_compile_suggestions(node)
     else:
         suggestions = ""
-    prompt = f"""The following code is not compiling:
+    backend_name = "PTX and Python driver glue" if KERNEL_BACKEND == "ptx" else KERNEL_BACKEND.upper()
+    prompt = f"""The following {backend_name} code is not compiling:
 ```
 {node.src}
 ```
 The error is:
 {node.metadata['compile'][0:min(len(node.metadata['compile']), COMPILE_LOG_CHARS)]}
 {f"Here are some potentially useful suggestions for fixing the compile error: {suggestions}" if retrieve else ""}
-Follow the original structure of the code (The optimized output architecture is named ModelNew with custom CUDA kernel(s)). 
+Follow the original structure of the code (the optimized output architecture is named ModelNew with custom {backend_name} kernel(s)).
 Generate real code, NOT pseudocode, make sure the code compiles and is fully functional. Just output the new model code, no other text, and NO testing code! This is very important! Output the new code in CODEBLOCKS (wrap in ``` and ```). ONLY fix the compile error, do not change the intended functionality of the code and its optimization techniques!{addendum}
 """
     llm_response = llm_server(prompt)
@@ -73,18 +80,23 @@ def _fix_compile_edits(node: Node, addendum="", retrieve=False):
     else:
         suggestions = ""
     src_lines = src_to_lines(str(node.src))
+    backend_name = (
+        "PTX and Python driver glue"
+        if KERNEL_BACKEND == "ptx"
+        else KERNEL_BACKEND.upper()
+    )
 
     prompt_content = read_file(CUTEGEN_BASE_PATH + "/cutegen/prompts/code_editor_prompt.md")
     output_instruction = "Output your reasoning for the edits in <reasoning></reasoning> tags. Output the edits in a codeblock ```json and ```."
 
-    prompt = f"""The following code is not compiling:
+    prompt = f"""The following {backend_name} code is not compiling:
 ```
 {get_numbered_lines(src_lines)}
 ```
 The error is:
 {node.metadata['compile'][0:min(len(node.metadata['compile']), COMPILE_LOG_CHARS)]}
 {f"Here are some potentially useful suggestions for fixing the compile error: {suggestions}" if retrieve else ""}
-Fix the compile error. DO NOT change the intent of the code by making the CUDA code simpler or use less CUDA. 
+Fix the compile error. DO NOT change the intent by simplifying or replacing the custom {backend_name} implementation.
 ```
 The reference code, which you can use to reason about the intended operation, is:
 ```
@@ -92,7 +104,7 @@ The reference code, which you can use to reason about the intended operation, is
 You will output a list of edits to the code. The semantics of the edits is described below:
 {prompt_content}
 
-Do not use pre-optimized libraries like cuBLAS, do not change the intended precision, and do not fall back to pytorch defaults (this means that the forward() pytorch function CANNOT contain any pytorch operators; it has to be a single call to the CUDA kernel). Don't change the original structure of the code (The optimized output architecture is named ModelNew with custom CUDA kernel(s)).
+Do not use pre-optimized libraries like cuBLAS, do not change the intended precision, and do not fall back to PyTorch operators. Preserve ModelNew and its custom {backend_name} kernel launch structure.
 
 {output_instruction}
 """
@@ -120,7 +132,8 @@ def _fix_correct_edits(node: Node, addendum="", retrieve=False):
     prompt_content = read_file(CUTEGEN_BASE_PATH + "/cutegen/prompts/code_editor_prompt.md")
     output_instruction = "Output your reasoning for the edits in <reasoning></reasoning> tags. Output the edits in a codeblock ```json and ```."
 
-    prompt = f"""The following code is not correct:
+    backend_name = "PTX and Python driver glue" if KERNEL_BACKEND == "ptx" else KERNEL_BACKEND.upper()
+    prompt = f"""The following {backend_name} code is not correct:
 ```
 {get_numbered_lines(src_lines)}
 ```
@@ -131,11 +144,11 @@ The reference code, which you can use to reason about the intended operation, is
 {node.ref}
 ```
 {f"Here are some potentially useful suggestions for fixing the correctness error: {suggestions}" if retrieve else ""}
-Fix the correctness error. DO NOT change the intent of the code by making the CUDA code simpler or use less CUDA. 
+Fix the correctness error. DO NOT change the intent by simplifying or replacing the custom {backend_name} implementation.
 
 You will output a list of edits to the code. The semantics of the edits is described below:
 {prompt_content}
-Do not use pre-optimized libraries like cuBLAS, do not change the intended precision, and do not fall back to pytorch defaults (this means that the forward() pytorch function CANNOT contain any pytorch operators; it has to be a single call to the CUDA kernel). Don't change the original structure of the code (The optimized output architecture is named ModelNew with custom CUDA kernel(s)).
+Do not use pre-optimized libraries like cuBLAS, do not change the intended precision, and do not fall back to PyTorch operators. Preserve ModelNew and its custom {backend_name} kernel launch structure.
 
 {output_instruction}
 """
@@ -161,6 +174,11 @@ def _fix_correct(node: Node, addendum="", retrieve=False):
         suggestions = get_correctness_suggestions(node)
     else:
         suggestions = ""
+    backend_name = (
+        "PTX and Python driver glue"
+        if KERNEL_BACKEND == "ptx"
+        else KERNEL_BACKEND.upper()
+    )
     prompt = f"""The following code is not correct:
 ```
 {node.src}
@@ -172,7 +190,7 @@ The reference code, which you can use to reason about the intended operation, is
 The error is:
 {node.metadata['correct'][0:min(len(node.metadata['correct']), COMPILE_LOG_CHARS)]}
 {f"Here are some potentially useful suggestions for fixing the correctness error: {suggestions}" if retrieve else ""}
-Fix the correctness error. DO NOT change the intent of the code by making the CUDA/CUTE code simpler or use less CUDA/CUTE. 
+Fix the correctness error. Do not change the intended backend or replace the custom {backend_name} implementation with a fallback.
 Generate real code, NOT pseudocode, make sure the code compiles and is fully functional. Just output the new model code, no other text, and NO testing code! This is very important! Output the new code in CODEBLOCKS (wrap in ``` and ```). ONLY fix the correctness error, do not change the intended functionality of the code and its optimization techniques!{addendum}
 """
     llm_response = llm_server(prompt)

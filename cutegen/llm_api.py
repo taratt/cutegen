@@ -319,18 +319,17 @@ def query_server(
         outputs = [choice.message.content for choice in response.choices]
     elif server_type == "openai":
         if is_reasoning_model:
-            # assert "o1" in model or "o3" in model, "Only support o1 and o3 for now"
-            # reasoning_effort = "high"
-            # print(f"Using OpenAI reasoning model: {model} with reasoning effort {reasoning_effort}")
             print(f"Using OpenAI reasoning model: {model} with reasoning effort {reasoning_effort}")
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
+            request_kwargs = {
+                "model": model,
+                "messages": [
                     {"role": "user", "content": prompt},
                 ],
-            #    reasoning_effort=reasoning_effort,
-                max_completion_tokens=max_completion_tokens,
-            )
+                "max_completion_tokens": max_completion_tokens,
+            }
+            if reasoning_effort is not None:
+                request_kwargs["reasoning_effort"] = reasoning_effort
+            response = client.chat.completions.create(**request_kwargs)
         else:
             response = client.chat.completions.create(
                 model=model,

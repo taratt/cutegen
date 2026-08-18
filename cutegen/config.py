@@ -1,14 +1,44 @@
 import os
 
-CUTEGEN_BASE_PATH = os.environ.get("CUTEGEN_BASE_PATH", "/home/tarasaba/PycharmProjects/cutegen_test/cutegen") # base path for the cutegen project
+CUTEGEN_BASE_PATH = os.environ.get(
+    "CUTEGEN_BASE_PATH",
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+) # base path for the cutegen project
 BUILD_DIRECTORY_BASE = f"{CUTEGEN_BASE_PATH}/build/" # base path for the build directory
 GPU_LOCK_FILE = "/tmp/gpu_flock.lock" # file for the GPU lock
 CUTLASS_BASE_PATH = os.environ.get("CUTLASS_BASE_PATH")
 CUTLASS_INCLUDE_PATH = os.environ.get("CUTLASS_INCLUDE_PATH")
-INITIAL_PROMPT_FILE = f"{CUTEGEN_BASE_PATH}/cutegen/prompts/cute_initial_kernelbench_prompt.txt"
-OPTIMIZE_PROMPT_FILE=f"{CUTEGEN_BASE_PATH}/cutegen/prompts/cute_optimized_kernelbench_prompt.txt"
-EDIT_PROMPT_FILE=f"{CUTEGEN_BASE_PATH}/cutegen/prompts/cute_optimized_kernelbench_prompt.txt"
+
+KERNEL_BACKEND = os.environ.get("KERNEL_BACKEND", "cuda").lower()
+if KERNEL_BACKEND not in {"cuda", "cute", "ptx"}:
+    raise ValueError(
+        f"Unsupported KERNEL_BACKEND={KERNEL_BACKEND!r}; expected cuda, cute, or ptx"
+    )
+
+_BACKEND_PROMPTS = {
+    "cuda": (
+        "cuda_initial_kernelbench_prompt.txt",
+        "cuda_only_optimization_prompt.txt",
+    ),
+    "cute": (
+        "cute_initial_kernelbench_prompt.txt",
+        "cute_optimized_kernelbench_prompt.txt",
+    ),
+    "ptx": (
+        "ptx_initial_kernelbench_prompt.txt",
+        "ptx_optimization_prompt.txt",
+    ),
+}
+_initial_prompt, _optimization_prompt = _BACKEND_PROMPTS[KERNEL_BACKEND]
+INITIAL_PROMPT_FILE = f"{CUTEGEN_BASE_PATH}/cutegen/prompts/{_initial_prompt}"
+OPTIMIZE_PROMPT_FILE = f"{CUTEGEN_BASE_PATH}/cutegen/prompts/{_optimization_prompt}"
+EDIT_PROMPT_FILE = OPTIMIZE_PROMPT_FILE
 TUNE_PROMPT_FILE=f"{CUTEGEN_BASE_PATH}/cutegen/prompts/cute_tuning_kernelbench_prompt.txt"
+DEBUG_GUIDE_FILE = (
+    f"{CUTEGEN_BASE_PATH}/cutegen/prompts/ptx_coding_debugging_guide_sm89.txt"
+    if KERNEL_BACKEND == "ptx"
+    else f"{CUTEGEN_BASE_PATH}/cutegen/prompts/cuda_coding_debugging_guide.txt"
+)
 DEBUG_PRINT = True # whether to print debug messages
 
 LOAD_MODEL_BACKOFF_TIME = 1.0 # time to wait before retrying a failed operation
@@ -20,12 +50,14 @@ COMPILE_LOG_CHARS = 10000 # maximum number of characters to pass into an llm to 
 
 MAX_FIX_ATTEMPTS = int(os.environ.get("SK_MAX_FIX_ATTEMPTS", 5)) # maximum number of attempts to fix a compile or correctness error
 MAX_RETRY_ATTEMPTS = 3 # maximum number of attempts to regenerate a node based on ref and prev_src
-FIX_COMPILE_MODE = "edits"
-FIX_CORRECT_MODE = "edits"
+FIX_COMPILE_MODE = os.environ.get("FIX_COMPILE_MODE", "edits")
+FIX_CORRECT_MODE = os.environ.get("FIX_CORRECT_MODE", "edits")
 FIX_RETRIEVE = True
 
 CODEGEN_INITIAL_MODE = "original" # mode to generate the initial code, options: original, edits
-CODEGEN_OPTIMIZE_MODE = "edits" # mode to optimize the code, options: original, edits
+CODEGEN_OPTIMIZE_MODE = os.environ.get(
+    "CODEGEN_OPTIMIZE_MODE", "edits"
+) # mode to optimize the code, options: original, edits
 
 MAX_CONCURRENT_PROCESSES = 1 # maximum number of concurrent processes for node execution
 EVAL_RUN_TIMEOUT = 300.0 # maximum time to wait for a child process to finish run_in_subprocess
@@ -53,6 +85,7 @@ LLM_CONFIG_CODEGEN = [
     #LLMConfig(server_type="openai", model_name="o3-2025-04-16", temperature=0.5, is_reasoning_model=True, max_completion_tokens=100000),
     # LLMConfig(server_type="percepta", model_name="Qwen/Qwen3-32B", temperature=0.0, max_tokens=100000)
     # LLMConfig(server_type="google", model_name="gemini-2.5-pro", temperature=0.5, max_tokens=100000),
+    # LLMConfig(server_type="openai", model_name="gpt-5", temperature=0.5, is_reasoning_model=True, max_completion_tokens=100000)
     LLMConfig(
         server_type="kimi",
         model_name="kimi-k3",

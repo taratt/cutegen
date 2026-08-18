@@ -26,7 +26,7 @@ from cutegen.node import Node, ErrorType
 from cutegen.util import set_seed, debug_print, acquire_gpu, release_gpu, remove_build_directory, read_file_with_lock, write_file_with_lock
 
 ####### CONSTANTS #######
-from cutegen.config import CUTEGEN_BASE_PATH, LOAD_MODEL_BACKOFF_TIME, RUN_MODEL_BACKOFF_TIME, GPU_REQ_SPACE, CPU_REQ_SPACE, BUILD_DIRECTORY_BASE, EVAL_RUN_TIMEOUT, BENCHMARK_TORCH_COMPILE, TORCH_COMPILE_MODE, EVAL_COLD_CACHE, NSIGHT_COMPUTE_BIN, NSIGHT_COMPUTE_SET, USE_PROFILING
+from cutegen.config import CUTEGEN_BASE_PATH, LOAD_MODEL_BACKOFF_TIME, RUN_MODEL_BACKOFF_TIME, GPU_REQ_SPACE, CPU_REQ_SPACE, BUILD_DIRECTORY_BASE, EVAL_RUN_TIMEOUT, BENCHMARK_TORCH_COMPILE, TORCH_COMPILE_MODE, EVAL_COLD_CACHE, NSIGHT_COMPUTE_BIN, NSIGHT_COMPUTE_SET, USE_PROFILING, KERNEL_BACKEND
 
 
 import shutil
@@ -205,9 +205,14 @@ def load_custom_model(model_custom_src: str, context: dict, metadata: dict, buil
     try:
         compile(model_custom_src, "<string>", "exec")
         exec(model_custom_src, context)
+        validator = context.get("validate_generated_code")
+        if KERNEL_BACKEND == "ptx" and callable(validator):
+            validator()
         torch.cuda.synchronize()
     except Exception as e:
-        metadata["compile"] = f"Syntax error in generated code: {str(e)}"
+        metadata["compile"] = (
+            f"Generated code compilation/loading error:\n{str(e)}"
+        )
         retval = None
 
     try:
@@ -254,7 +259,7 @@ def _check_compile(ref_src, gen_src, metadata, build_directory=None):
     try:
         ModelNew = load_custom_model(gen_src, context, metadata, build_directory)
         if ModelNew is None:
-            metadata["compile"] += f"Loading ModelNew failed: ModelNew is None"
+            metadata["compile"] += "\nLoading ModelNew failed: ModelNew is None"
             return False
     except Exception as e:
         torch.cuda.synchronize()
@@ -1051,6 +1056,25 @@ def parse_nsight_text_to_metrics(nsight_text: str) -> Dict[str, Any]:
                 result["kernel"] = kernel_name
                 break
 
+    # Driver-API JIT-loaded PTX entries are often printed without a C++ "void"
+    # prefix. Support common Nsight Compute text formats while retaining the
+    # existing CUDA/C++ parser above.
+    if result["kernel"] is None:
+        fallback_patterns = (
+            r'Profiling\s+"([^"]+)"',
+            r"Kernel Name\s*[:=]?\s+([A-Za-z_.$][\w.$:@<>]*)",
+            r"^([A-Za-z_.$][\w.$:@<>]*)\s*\(",
+        )
+        for line in lines:
+            stripped = line.strip()
+            for pattern in fallback_patterns:
+                match = re.search(pattern, stripped)
+                if match:
+                    result["kernel"] = match.group(1)
+                    break
+            if result["kernel"] is not None:
+                break
+
     # --- Main pass: sections + tables + advice ---
     while i < n:
         raw_line = lines[i]
@@ -1184,8 +1208,8 @@ def _load_profiler_script(
         .replace("__SEED__", str(seed_num))
         .replace("__NUM_WARMUPS__", str(num_warmups))
         .replace("__NUM_ITERS__", str(num_iters))
-        .replace("__REF_SRC__", ref_src.replace('"""', '\\"\\"\\"'))
-        .replace("__GEN_SRC__", gen_src.replace('"""', '\\"\\"\\"'))
+        .replace("__REF_SRC_REPR__", repr(ref_src))
+        .replace("__GEN_SRC_REPR__", repr(gen_src))
         .replace("__PREBUILT_SO_FILES__", json.dumps(prebuilt_so_files))
     )
 
@@ -1224,17 +1248,13 @@ def run_nsight_profile(
         metadata["profile_prebuild_meta"] = prebuild_meta
         return None 
     so_files = glob.glob(os.path.join(profile_build_directory, "**", "*.so"), recursive=True)
-    if not so_files:
-       metadata["profile_error"] = f"No prebuilt .so found under {profile_build_directory}"
-       metadata["profile_error"] = f"Nsight Compute exited {proc.returncode}"
-       print("PROFILE FAILED")
-       print("CMD:", metadata.get("profile_cmd"))
-       print("STDOUT:", metadata.get("profile_stdout"))
-       print("STDERR:", metadata.get("profile_stderr"))
-       print("BUILD DIR:", metadata.get("profile_build_directory"))
-       print("TMP DIR:", metadata.get("profile_tmp_directory"))
-       return None
-   # Write profiler.py from template
+    if KERNEL_BACKEND != "ptx" and not so_files:
+        metadata["profile_error"] = (
+            f"No prebuilt .so found under {profile_build_directory}"
+        )
+        return None
+
+    # Write profiler.py from template
     _load_profiler_script(
         profiler_script_path=profiler_script,
         ref_src=ref_src,

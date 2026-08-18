@@ -41,3 +41,30 @@ Then install CUTLASS: https://github.com/NVIDIA/cutlass
 ```
 python cutegen/main.py
 ```
+
+### PTX generation
+
+PTX generation uses the same compile, correctness, CUDA-event timing, Nsight
+profiling, retry, and node-persistence pipeline as CUDA/CuTe generation. Select
+the backend with `KERNEL_BACKEND=ptx`; results are kept under
+`saved_nodes/ptx/`.
+
+Validate the CUDA Driver API integration on an RTX 4090:
+
+```bash
+python -u scripts/smoke_test_ptx_runtime.py
+```
+
+Run the configured sample with category-specific profiling depths:
+
+```bash
+python -u scripts/run_profiled_sample.py --backend ptx 2>&1 | tee ptx_sample.log
+```
+
+Re-check and time a saved PTX node through the exact evaluator:
+
+```bash
+KERNEL_BACKEND=ptx python -u cutegen/replay_saved_nodes.py \
+  --path saved_nodes/ptx/level1-profiled/<kernel>/<node>.json \
+  --print_times --num_warmups 5 --num_trials 100
+```

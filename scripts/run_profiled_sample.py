@@ -21,7 +21,7 @@ KERNEL_GROUPS = {
         "profiling_start_depth": 6,
     },
     "reduction-norm": {
-        "kernel_ids": (33, 36, 40, 49, 53),
+        "kernel_ids": (33, 40, 49, 53),
         "profiling_start_depth": 5,
     },
     "loss": {
@@ -41,6 +41,12 @@ def parse_args() -> argparse.Namespace:
         choices=KERNEL_GROUPS,
         help="Categories to run; omit to run every category.",
     )
+    parser.add_argument(
+        "--backend",
+        choices=("cuda", "cute", "ptx"),
+        default=os.environ.get("KERNEL_BACKEND", "cuda"),
+        help="Generated kernel backend (default: KERNEL_BACKEND or cuda).",
+    )
     return parser.parse_args()
 
 
@@ -49,11 +55,9 @@ def main() -> None:
     categories = args.categories or list(KERNEL_GROUPS)
     project_root = Path(__file__).resolve().parents[1]
 
-    if not os.environ.get("MOONSHOT_API_KEY"):
-        raise SystemExit("MOONSHOT_API_KEY must be set before running this script.")
-
     base_env = os.environ.copy()
     base_env["CUTEGEN_BASE_PATH"] = str(project_root)
+    base_env["KERNEL_BACKEND"] = args.backend
     base_env["CUTLASS_BASE_PATH"] = base_env.get(
         "CUTLASS_BASE_PATH", str(project_root / "cutegen" / "cutlass")
     )
@@ -62,7 +66,7 @@ def main() -> None:
         str(project_root / "cutegen" / "cutlass" / "include"),
     )
     base_env["CUTEGEN_SAVE_DIR_BASE"] = str(
-        project_root / "saved_nodes" / "cute" / "level1-profiled"
+        project_root / "saved_nodes" / args.backend / "level1-profiled"
     )
     base_env["USE_PROFILING"] = "true"
 
