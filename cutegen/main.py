@@ -63,8 +63,7 @@ if __name__ == "__main__":
             )
         elif KERNEL_BACKEND == "cute":
             coordinator.codegen_initial_addendum = (
-                f"Use CUTE headers from {CUTLASS_INCLUDE_PATH}/cute/ and do not "
-                "generate CUTLASS templated code."
+               f"Your task is to optimize using CUTE framework. If the operation can be implement using CUTE operators, USE CUTE instead of writting CUDA from scratch! If cute layout and tensors allow more optimization, use them. DO NOT under any circumstances generate CUTLASS templated code. The include cute location is found in {CUTLASS_INCLUDE_PATH}/cute/. You should add this include path directly in code in load_inline. DO NOT read from environment variables. Start with generating the simplest implementation in CuTE that is correct. For convolution-like kernels, do NOT start from a naive direct one-thread-per-output kernel when output spatial dimensions are large; start from a cooperative tiled implementation in CUTE instead, but do not jump immediately to a fragile implicit-GEMM rewrite. Pay close attention to the correct convolution kernel example given to you. Notice that CUTE tuples don’t support operator[]; you must use cute::get<Idx>(...). Pay close attention to the matrix operands dimensions and how they are compared to each other and base your implementation on what suits best for those relations. If there are a sequence of operations, you can try fusing them in the kernel."
             )
         else:
             coordinator.codegen_initial_addendum = (
