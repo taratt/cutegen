@@ -68,7 +68,7 @@ if __name__ == "__main__":
         else:
             coordinator.codegen_initial_addendum = (
                 "Your task is to optimize using CUDA. DO NOT under any "
-                "circumstances generate CUTLASS templated code. Pay close "
+                "circumstances generate CUTLASS templated code. Start with generating the simplest implementation in CUDA that is correct. Pay close "
                 "attention to the matrix operands dimensions and how they are "
                 "compared to each other and base your implementation on what "
                 "suits best for those relations. If there are a sequence of "

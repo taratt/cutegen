@@ -20,6 +20,7 @@ SAMBANOVA_API_KEY = os.environ.get("SAMBANOVA_API_KEY")
 FIREWORKS_API_KEY = os.environ.get("FIREWORKS_API_KEY")
 PERCEPTA_API_KEY = os.environ.get("PERCEPTA_API_KEY")
 MOONSHOT_API_KEY = os.environ.get("MOONSHOT_API_KEY")
+KIMI_TIMEOUT_SECONDS = float(os.environ.get("KIMI_TIMEOUT_SECONDS", "900"))
 
 TOKEN_USAGE_LOG = []
 TOKEN_USAGE_CSV_PATH = os.environ.get("TOKEN_USAGE_CSV_PATH", "kimi_token_usage.csv")
@@ -213,7 +214,7 @@ def query_server(
             client = OpenAI(
                 api_key=MOONSHOT_API_KEY,
                 base_url="https://api.moonshot.ai/v1",
-                timeout=10000000,
+                timeout=KIMI_TIMEOUT_SECONDS,
                 max_retries=3,
             )
             model = model_name
