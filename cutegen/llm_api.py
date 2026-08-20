@@ -23,8 +23,49 @@ MOONSHOT_API_KEY = os.environ.get("MOONSHOT_API_KEY")
 KIMI_TIMEOUT_SECONDS = float(os.environ.get("KIMI_TIMEOUT_SECONDS", "900"))
 
 TOKEN_USAGE_LOG = []
-TOKEN_USAGE_CSV_PATH = os.environ.get("TOKEN_USAGE_CSV_PATH", "kimi_token_usage.csv")
+TOKEN_USAGE_CSV_PATH = os.environ.get("TOKEN_USAGE_CSV_PATH", "sonnet5_token_usage.csv")
 CURRENT_KERNEL_NAME = None
+
+# Anthropic models that reject manual budget_tokens and non-default sampling params.
+_ADAPTIVE_THINKING_ANTHROPIC_PREFIXES = (
+    "claude-sonnet-5",
+    "claude-opus-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-fable-5",
+    "claude-mythos-5",
+)
+
+
+def _uses_adaptive_thinking(model_name: str) -> bool:
+    return any(model_name.startswith(prefix) for prefix in _ADAPTIVE_THINKING_ANTHROPIC_PREFIXES)
+
+
+def _anthropic_text_outputs(response) -> list[str]:
+    texts = [
+        block.text
+        for block in response.content
+        if getattr(block, "type", None) == "text" and getattr(block, "text", None)
+    ]
+    if texts:
+        return texts
+    # Fallback for older SDK content shapes.
+    return [
+        block.text
+        for block in response.content
+        if hasattr(block, "text") and getattr(block, "type", None) != "thinking"
+    ]
+
+
+def _anthropic_create_message(client, **request_kwargs):
+    """
+    Create an Anthropic message, streaming when needed.
+
+    The Anthropic Python SDK requires streaming for requests that may exceed
+    ~10 minutes (common with adaptive thinking + high effort).
+    """
+    with client.messages.stream(**request_kwargs) as stream:
+        return stream.get_final_message()
 
 def set_current_kernel_name(name: str):
     global CURRENT_KERNEL_NAME
@@ -192,6 +233,8 @@ def query_server(
             model = model_name
 
         case "anthropic":
+            if not ANTHROPIC_KEY:
+                raise ValueError("ANTHROPIC_API_KEY must be set when server_type='anthropic'")
             client = anthropic.Anthropic(
                 api_key=ANTHROPIC_KEY,
             )
@@ -235,34 +278,63 @@ def query_server(
     # Logic to query the LLM
     if server_type == "anthropic":
         assert type(prompt) == str
+        anthropic_max_tokens = (
+            max_completion_tokens if is_reasoning_model else max_tokens
+        )
+        messages = [{"role": "user", "content": prompt}]
 
-        if is_reasoning_model:
-            # Use beta endpoint with thinking enabled for reasoning models
+        if is_reasoning_model and (
+            _uses_adaptive_thinking(model) or reasoning_effort is not None
+        ):
+            # Sonnet 5 / recent Opus: adaptive thinking + effort.
+            # max_tokens caps thinking + final text combined.
+            request_kwargs = {
+                "model": model,
+                "system": system_prompt,
+                "messages": messages,
+                "max_tokens": anthropic_max_tokens,
+                "thinking": {"type": "adaptive"},
+                "output_config": {
+                    "effort": reasoning_effort or "high",
+                },
+            }
+            response = _anthropic_create_message(client, **request_kwargs)
+        elif is_reasoning_model:
+            # Legacy Claude reasoning path with fixed thinking budget.
             response = client.beta.messages.create(
                 model=model,
                 system=system_prompt,
-                messages=[
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=max_tokens,
-                # Claude thinking requires budget_tokens for thinking (reasoning)
+                messages=messages,
+                max_tokens=anthropic_max_tokens,
                 thinking={"type": "enabled", "budget_tokens": budget_tokens},
                 betas=["output-128k-2025-02-19"],
             )
+        elif _uses_adaptive_thinking(model):
+            # Sonnet 5 rejects non-default temperature/top_p/top_k.
+            response = _anthropic_create_message(
+                client,
+                model=model,
+                system=system_prompt,
+                messages=messages,
+                max_tokens=anthropic_max_tokens,
+            )
         else:
-            # Use standard endpoint for normal models
             response = client.messages.create(
                 model=model,
                 system=system_prompt,
-                messages=[
-                    {"role": "user", "content": prompt},
-                ],
+                messages=messages,
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
-                max_tokens=max_tokens,
+                max_tokens=anthropic_max_tokens,
             )
-        outputs = [choice.text for choice in response.content if not hasattr(choice, 'thinking') or not choice.thinking]
+        outputs = _anthropic_text_outputs(response)
+        if not outputs:
+            print(
+                "[WARN] Anthropic returned no text blocks "
+                "(response may have been truncated by max_tokens while thinking)."
+            )
+            outputs = [""]
 
     elif server_type == "google":
         # assert model_name == "gemini-1.5-flash-002", "Only test this for now"

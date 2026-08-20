@@ -65,8 +65,9 @@ def main() -> None:
         "CUTLASS_INCLUDE_PATH",
         str(project_root / "cutegen" / "cutlass" / "include"),
     )
-    base_env["CUTEGEN_SAVE_DIR_BASE"] = str(
-        project_root / "saved_nodes" / args.backend / "level1-profiled"
+    base_env["CUTEGEN_SAVE_DIR_BASE"] = base_env.get(
+        "CUTEGEN_SAVE_DIR_BASE",
+        str(project_root / "saved_nodes" / args.backend / "level1-profiled"),
     )
     base_env["USE_PROFILING"] = "true"
 

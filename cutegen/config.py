@@ -86,11 +86,20 @@ LLM_CONFIG_CODEGEN = [
     # LLMConfig(server_type="percepta", model_name="Qwen/Qwen3-32B", temperature=0.0, max_tokens=100000)
     # LLMConfig(server_type="google", model_name="gemini-2.5-pro", temperature=0.5, max_tokens=100000),
     # LLMConfig(server_type="openai", model_name="gpt-5", temperature=0.5, is_reasoning_model=True, max_completion_tokens=100000)
+    # LLMConfig(
+    #     server_type="kimi",
+    #     model_name="kimi-k3",
+    #     is_reasoning_model=True,
+    #     reasoning_effort="high",
+    #     max_completion_tokens=32000,
+    # ),
     LLMConfig(
-        server_type="kimi",
-        model_name="kimi-k3",
+        server_type="anthropic",
+        model_name="claude-sonnet-5",
         is_reasoning_model=True,
         reasoning_effort="high",
+        # Anthropic max_tokens is a hard cap on thinking + response text.
+        max_tokens=32000,
         max_completion_tokens=32000,
     )
 ]
