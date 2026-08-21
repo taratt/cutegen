@@ -42,3 +42,9 @@ kernel,server_type,model,input_tokens,output_tokens,total_tokens
 102_ScaledDotProductAttention.py,kimi,kimi-k3,7516,8922,16438
 102_ScaledDotProductAttention.py,kimi,kimi-k3,9686,652,10338
 102_ScaledDotProductAttention.py,kimi,kimi-k3,7709,20645,28354
+102_ScaledDotProductAttention.py,kimi,kimi-k3,9263,28532,37795
+102_ScaledDotProductAttention.py,kimi,kimi-k3,17151,6716,23867
+102_ScaledDotProductAttention.py,kimi,kimi-k3,16446,5414,21860
+102_ScaledDotProductAttention.py,kimi,kimi-k3,16833,733,17566
+102_ScaledDotProductAttention.py,kimi,kimi-k3,17959,3050,21009
+102_ScaledDotProductAttention.py,kimi,kimi-k3,17965,32000,49965
