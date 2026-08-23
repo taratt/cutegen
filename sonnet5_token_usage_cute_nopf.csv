@@ -282,3 +282,13 @@ kernel,server_type,model,input_tokens,output_tokens,total_tokens
 103_Conv2D_SquareKernel11.py,anthropic,claude-sonnet-5,11230,13211,24441
 103_Conv2D_SquareKernel11.py,anthropic,claude-sonnet-5,9128,12784,21912
 103_Conv2D_SquareKernel11.py,anthropic,claude-sonnet-5,10422,6255,16677
+103_Conv2D_SquareKernel11.py,anthropic,claude-sonnet-5,10422,8300,18722
+103_Conv2D_SquareKernel11.py,anthropic,claude-sonnet-5,11260,9293,20553
+103_Conv2D_SquareKernel11.py,anthropic,claude-sonnet-5,9000,1144,10144
+103_Conv2D_SquareKernel11.py,anthropic,claude-sonnet-5,13072,1724,14796
+103_Conv2D_SquareKernel11.py,anthropic,claude-sonnet-5,10077,118,10195
+103_Conv2D_SquareKernel11.py,anthropic,claude-sonnet-5,10560,10845,21405
+103_Conv2D_SquareKernel11.py,anthropic,claude-sonnet-5,11079,1381,12460
+103_Conv2D_SquareKernel11.py,anthropic,claude-sonnet-5,11091,20086,31177
+103_Conv2D_SquareKernel11.py,anthropic,claude-sonnet-5,11587,7313,18900
+103_Conv2D_SquareKernel11.py,anthropic,claude-sonnet-5,11990,7249,19239
