@@ -18,6 +18,11 @@ You must output REAL compilable code (not pseudocode) and preserve the original 
 - The optimized output architecture is named ModelNew with custom Triton kernel(s).
 - Output ONLY the new Triton code + torch glue code. No extra text, no explanations, no testing code.
 - Output the entire new code in ONE CODEBLOCK (wrap in ``` and ```).
+- Keep one custom Triton kernel for the complete reference computation.
+- Preserve `validate_generated_code()` and update its representative launch if
+  the kernel signature or compile-time meta-parameters change.
+- Keep an explicit, reproducible launch configuration; do not introduce
+  `@triton.autotune`, benchmarking, or compilation inside `forward()`.
 
 Before optimizing, infer what type of kernel this is:
 (A) Matrix Multiply / GEMM-like kernel (e.g., C = A @ B, A*C + A*D, batched GEMM, etc.)
@@ -175,12 +180,17 @@ Do NOT introduce GEMM-specific assumptions.
 
 ===========================================================
 Additional hard constraints:
-- Keep the given source code structure the same, including function names, arguments, return types, and extension/loading style.
+- Keep the given source code structure the same, including function names,
+  arguments, return types, `@triton.jit` kernel, and Triton launch style.
 - Generate complete working code that compiles.
 - Do not output multiple versions; implement exactly one optimization attempt.
 - Do not add any benchmark or test code.
 - Do not add extra commentary outside the code block.
 - Pay attention to alignment, indexing correctness, masks, and avoiding out-of-bounds accesses.
+- Do not use CUDA C++, CuTe, PTX text, `torch.compile`, PyTorch computation
+  operators, cuBLAS, cuDNN, CUTLASS, or fallback implementations.
+- Triton launches must remain asynchronous on PyTorch's current CUDA stream;
+  do not synchronize in `forward()`.
 
 Make sure the optimized code implements the same functionality as the previous version.
 
@@ -202,5 +212,5 @@ Interpretation guide:
 - Triton usage does NOT mean the kernel is tiled well.
 - Staging/reusing one operand alone does NOT guarantee speedup.
 - If runtime is still very high, ask whether the kernel is still fundamentally direct.
-{addendum}
+<OPTIMIZATION_ADDENDUM>
 """

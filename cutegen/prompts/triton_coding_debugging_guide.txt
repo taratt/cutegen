@@ -1,0 +1,63 @@
+TRITON KERNEL COMPILE AND CORRECTNESS GUIDE
+
+Generated source contract
+- Import `triton` and `triton.language as tl`.
+- Define complete `@triton.jit` kernels and a `ModelNew` module.
+- Launch with `kernel[grid](...)` and explicit compile-time meta-parameters.
+- Preserve `validate_generated_code()` and its representative launch so Triton
+  JIT/compiler errors are classified as compile failures.
+- Do not use CUDA C++, CuTe, embedded PTX, `torch.compile`, pre-optimized
+  libraries, or PyTorch operators as computational fallbacks.
+
+Frequent compile failures
+- Python values used inside `@triton.jit` must be compile-time constants or
+  kernel arguments. Mark meta-parameters with `tl.constexpr`.
+- Use Triton operations inside kernels (`tl.arange`, `tl.load`, `tl.store`,
+  `tl.sum`, `tl.max`, `tl.dot`); do not call arbitrary Python or Torch code.
+- `tl.arange` dimensions and block shapes generally need compile-time
+  constants and valid power-of-two reduction extents.
+- Ensure the launch grid has the expected rank and all required kernel
+  arguments are passed in the exact order.
+- Keep pointer arithmetic and scalar types compatible. Cast deliberately when
+  mixing signed offsets, strides, and `tl.arange` values.
+- `tl.dot` has dtype, rank, tile-size, and target-specific constraints. If
+  those constraints do not fit, use a correct explicit reduction first.
+- Avoid unsupported language features, dynamic Python loops, lists, and
+  runtime tensor shape access inside a JIT kernel.
+
+Frequent runtime and correctness failures
+- Mask every partial load and store independently. A valid output element does
+  not imply every input element used to compute it is valid.
+- For reductions, use neutral masked values: zero for sums, `-inf` for maxima,
+  and `+inf` for minima, as appropriate.
+- Compute offsets from the real tensor strides. Do not silently assume
+  contiguous or channels-last layout unless the wrapper enforces it.
+- Use 64-bit offsets for large tensors to avoid integer overflow.
+- Preserve output shape and dtype. Keep accumulation precision consistent with
+  the reference and cast only at the final store when appropriate.
+- Match convolution stride, padding, dilation, groups, bias, and transposed
+  indexing exactly.
+- Match reduction axes and normalization formulas exactly, including epsilon
+  placement and biased/unbiased variance behavior.
+- Parameterized modules must copy the reference constructor and parameter
+  initialization; the custom kernel must consume those parameters directly.
+
+Timing and launch guidance
+- Kernel launches are asynchronous. Do not synchronize inside `forward()`;
+  the evaluator uses CUDA events and synchronizes after recording the end
+  event.
+- Do not include benchmarking, autotuning, disk-cache deletion, or compilation
+  in `forward()`.
+- Use a fixed launch configuration. The evaluator performs warmups before 100
+  timed trials, so JIT compilation is excluded from reported steady-state
+  kernel time.
+- Favor coalesced accesses and enough programs to occupy the GPU. Avoid
+  one-program-per-large-output designs with long scalar loops.
+
+Nsight Compute guidance
+- Triton kernels are JIT-compiled CUDA kernels and can be profiled directly by
+  Nsight Compute.
+- Treat profiler counters as supporting evidence. Structural tiling, data
+  reuse, and algorithm choice take priority over minor launch tuning.
+- Triton-generated kernel names may be mangled; identify the kernel using the
+  profile's launch configuration and operation as well as its displayed name.

@@ -163,7 +163,7 @@ def codegen_optimize_original(node: Node, addendum=""):
     llm_response = llm_server(prompt)
     return extract_first_code(
         llm_response,
-        code_language_types=["python", "ptx", "cpp", "c", ""],
+        code_language_types=["python", "triton", "ptx", "cpp", "c", ""],
     )
 
 

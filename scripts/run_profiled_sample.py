@@ -38,12 +38,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "categories",
         nargs="*",
-        choices=KERNEL_GROUPS,
-        help="Categories to run; omit to run every category.",
+        # Do not pass choices= here: with nargs='*' and no positionals,
+        # argparse checks the empty list against choices and crashes
+        # (TypeError with a dict, or invalid-choice with a sequence).
+        metavar="CATEGORY",
+        help=(
+            "Categories to run; omit to run every category. "
+            f"Choices: {', '.join(KERNEL_GROUPS)}"
+        ),
     )
     parser.add_argument(
         "--backend",
-        choices=("cuda", "cute", "ptx"),
+        choices=("cuda", "cute", "ptx", "triton"),
         default=os.environ.get("KERNEL_BACKEND", "cuda"),
         help="Generated kernel backend (default: KERNEL_BACKEND or cuda).",
     )
@@ -52,7 +58,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    categories = args.categories or list(KERNEL_GROUPS)
+    if args.categories:
+        unknown = [c for c in args.categories if c not in KERNEL_GROUPS]
+        if unknown:
+            raise SystemExit(
+                f"Unknown categories: {unknown}. "
+                f"Valid: {', '.join(KERNEL_GROUPS)}"
+            )
+        categories = args.categories
+    else:
+        categories = list(KERNEL_GROUPS)
     project_root = Path(__file__).resolve().parents[1]
 
     base_env = os.environ.copy()

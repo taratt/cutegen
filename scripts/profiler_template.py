@@ -145,7 +145,7 @@ def load_custom_model(gen_src: str, context: dict, build_dir: str):
         patched_src = _patch_gen_src_to_use_prebuilt_modules(gen_src)
         prebuilt_exts = _load_prebuilt_extension(PREBUILT_SO_FILES)
     else:
-        # PTX sources use cutegen.ptx_runtime and do not build a Python .so.
+        # PTX and Triton sources JIT kernels without a Python extension .so.
         patched_src = gen_src
         prebuilt_exts = []
 

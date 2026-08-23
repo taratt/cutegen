@@ -206,7 +206,7 @@ def load_custom_model(model_custom_src: str, context: dict, metadata: dict, buil
         compile(model_custom_src, "<string>", "exec")
         exec(model_custom_src, context)
         validator = context.get("validate_generated_code")
-        if KERNEL_BACKEND == "ptx" and callable(validator):
+        if KERNEL_BACKEND in {"ptx", "triton"} and callable(validator):
             validator()
         torch.cuda.synchronize()
     except Exception as e:
@@ -1248,7 +1248,7 @@ def run_nsight_profile(
         metadata["profile_prebuild_meta"] = prebuild_meta
         return None 
     so_files = glob.glob(os.path.join(profile_build_directory, "**", "*.so"), recursive=True)
-    if KERNEL_BACKEND != "ptx" and not so_files:
+    if KERNEL_BACKEND not in {"ptx", "triton"} and not so_files:
         metadata["profile_error"] = (
             f"No prebuilt .so found under {profile_build_directory}"
         )

@@ -68,3 +68,38 @@ KERNEL_BACKEND=ptx python -u cutegen/replay_saved_nodes.py \
   --path saved_nodes/ptx/level1-profiled/<kernel>/<node>.json \
   --print_times --num_warmups 5 --num_trials 100
 ```
+
+### Triton generation
+
+Triton uses the same full-size correctness checks, CUDA-event timing (5 warmups
+and 100 measured trials), retry/fix loop, best-time persistence, and optional
+Nsight Compute feedback as the CUDA, CuTe, and PTX backends. PyTorch installs a
+compatible Triton package on supported Linux/CUDA installations.
+
+Run without profiling:
+
+```bash
+KERNEL_BACKEND=triton \
+USE_PROFILING=false \
+CUTEGEN_SAVE_DIR_BASE="$PWD/saved_nodes/triton/level1-no-profile" \
+python -u -m cutegen.main
+```
+
+Run the configured sample with category-specific delayed profiling:
+
+```bash
+KERNEL_BACKEND=triton \
+CUTEGEN_SAVE_DIR_BASE="$PWD/saved_nodes/triton/level1-profiled" \
+python -u scripts/run_profiled_sample.py --backend triton
+```
+
+GPU integration checks (run only while no experiment is using the GPU):
+
+```bash
+KERNEL_BACKEND=triton USE_PROFILING=false \
+  python -u scripts/test_triton_evaluator.py
+KERNEL_BACKEND=triton USE_PROFILING=false \
+  python -u scripts/test_triton_runner.py
+KERNEL_BACKEND=triton USE_PROFILING=true \
+  python -u scripts/test_triton_profiler.py
+```

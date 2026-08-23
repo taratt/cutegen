@@ -1,0 +1,85 @@
+You write custom Triton kernels to replace the PyTorch operators in the given
+reference architecture and achieve speedups.
+
+TARGET_GPU: NVIDIA GeForce RTX 4090
+TARGET_COMPUTE_CAPABILITY: 8.9
+TARGET_ARCHITECTURE: sm_89
+
+The reference architecture is:
+```python
+<REF>
+```
+
+Implement an architecture named `ModelNew` whose `forward()` performs the
+complete reference computation using one custom Triton kernel. Return the
+complete Python source in exactly one fenced code block and no explanatory
+text.
+
+Required source structure:
+
+```python
+import torch
+import torch.nn as nn
+import triton
+import triton.language as tl
+
+@triton.jit
+def custom_kernel(...):
+    ...
+
+def validate_generated_code():
+    # Make one representative launch that forces Triton JIT compilation.
+    # Allocate only the minimal tensors needed for the proven reference shape.
+    ...
+
+class ModelNew(nn.Module):
+    def __init__(self, ...):
+        super().__init__()
+        # Match the reference constructor, parameters, and initialization.
+
+    def forward(self, ...):
+        # Allocate outputs, launch custom_kernel, and return the output.
+        ...
+```
+
+Contract and safety rules:
+- Use real Triton Python (`@triton.jit` and `triton.language`), not CUDA C++,
+  CuTe, PTX text, pseudocode, or `torch.compile`.
+- `ModelNew` must preserve the reference constructor, parameters, output
+  shape, output dtype, output device, values, and all reference semantics.
+- Implement the complete `forward()` computation with exactly one custom
+  Triton kernel. Fuse operations that appear in the reference when needed.
+- Launch Triton normally with `custom_kernel[grid](...)`; Triton will enqueue
+  work on PyTorch's current CUDA stream. Do not synchronize in `forward()`.
+- Define `validate_generated_code()` and make one representative kernel launch
+  from it so compile validation catches Triton JIT/compiler errors before
+  correctness testing. Do not benchmark or autotune in this hook; the framework
+  synchronizes after calling it.
+- PyTorch may be used for module/parameter definitions, tensor allocation,
+  shape/stride inspection, contiguous conversion, and metadata-only views.
+- Do not use PyTorch computation operators, ATen operators, Triton library
+  fallbacks, cuBLAS, cuDNN, CUTLASS, or fallback implementations for the
+  computation being replaced.
+- Do not call the reference operator from `forward()`, including via
+  `torch.nn.functional`, tensor arithmetic, reductions, matmul, convolution,
+  or activation methods.
+- Pass tensor strides explicitly when layout is not provably fixed. Use
+  64-bit indexing where the largest possible element offset may exceed signed
+  32-bit range.
+- Every potentially partial program tile must use correct masks for all loads
+  and stores. Masked values used in reductions must use a mathematically safe
+  neutral value.
+- Preserve precision. Accumulating float16/bfloat16 products in float32 is
+  allowed when it matches normal PyTorch semantics, but do not change input or
+  output dtypes to gain speed.
+- Specialization to explicit shapes, dtypes, and layouts proven by the
+  reference inputs is allowed. Do not assume properties not established by the
+  reference.
+- Choose launch dimensions, `BLOCK_SIZE`, `num_warps`, and `num_stages` from
+  the actual operation and shapes. Use `tl.dot` only when its shape, dtype,
+  and layout requirements are satisfied.
+- Avoid `@triton.autotune` in generated submissions: use an explicit,
+  reproducible configuration so compile, correctness, timing, and profiling
+  evaluate the same kernel.
+- Generate complete importable code, not tests, benchmarks, alternatives, or
+  prose.

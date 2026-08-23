@@ -65,6 +65,15 @@ if __name__ == "__main__":
             coordinator.codegen_initial_addendum = (
                f"Your task is to optimize using CUTE framework. If the operation can be implement using CUTE operators, USE CUTE instead of writting CUDA from scratch! If cute layout and tensors allow more optimization, use them. DO NOT under any circumstances generate CUTLASS templated code. The include cute location is found in {CUTLASS_INCLUDE_PATH}/cute/. You should add this include path directly in code in load_inline. DO NOT read from environment variables. Start with generating the simplest implementation in CuTE that is correct. For convolution-like kernels, do NOT start from a naive direct one-thread-per-output kernel when output spatial dimensions are large; start from a cooperative tiled implementation in CUTE instead, but do not jump immediately to a fragile implicit-GEMM rewrite. Pay close attention to the correct convolution kernel example given to you. Notice that CUTE tuples don’t support operator[]; you must use cute::get<Idx>(...). Pay close attention to the matrix operands dimensions and how they are compared to each other and base your implementation on what suits best for those relations. If there are a sequence of operations, you can try fusing them in the kernel."
             )
+        elif KERNEL_BACKEND == "triton":
+            coordinator.codegen_initial_addendum = (
+                "Use only a custom @triton.jit kernel and Python launch glue. "
+                "Do not emit CUDA C++, CuTe, PTX text, torch.compile, or "
+                "PyTorch computational fallbacks. Preserve the full reference "
+                "semantics in one Triton kernel, use explicit masks and "
+                "strides, choose a fixed reproducible launch configuration, "
+                "and preserve the validate_generated_code JIT-validation hook."
+            )
         else:
             coordinator.codegen_initial_addendum = (
                 "Your task is to optimize using CUDA. DO NOT under any "

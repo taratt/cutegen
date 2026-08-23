@@ -10,9 +10,10 @@ CUTLASS_BASE_PATH = os.environ.get("CUTLASS_BASE_PATH")
 CUTLASS_INCLUDE_PATH = os.environ.get("CUTLASS_INCLUDE_PATH")
 
 KERNEL_BACKEND = os.environ.get("KERNEL_BACKEND", "cuda").lower()
-if KERNEL_BACKEND not in {"cuda", "cute", "ptx"}:
+if KERNEL_BACKEND not in {"cuda", "cute", "ptx", "triton"}:
     raise ValueError(
-        f"Unsupported KERNEL_BACKEND={KERNEL_BACKEND!r}; expected cuda, cute, or ptx"
+        f"Unsupported KERNEL_BACKEND={KERNEL_BACKEND!r}; "
+        "expected cuda, cute, ptx, or triton"
     )
 
 _BACKEND_PROMPTS = {
@@ -28,6 +29,10 @@ _BACKEND_PROMPTS = {
         "ptx_initial_kernelbench_prompt.txt",
         "ptx_optimization_prompt.txt",
     ),
+    "triton": (
+        "triton_initial_kernelbench_prompt.txt",
+        "triton_optimization_prompt.txt",
+    ),
 }
 _initial_prompt, _optimization_prompt = _BACKEND_PROMPTS[KERNEL_BACKEND]
 INITIAL_PROMPT_FILE = f"{CUTEGEN_BASE_PATH}/cutegen/prompts/{_initial_prompt}"
@@ -37,7 +42,11 @@ TUNE_PROMPT_FILE=f"{CUTEGEN_BASE_PATH}/cutegen/prompts/cute_tuning_kernelbench_p
 DEBUG_GUIDE_FILE = (
     f"{CUTEGEN_BASE_PATH}/cutegen/prompts/ptx_coding_debugging_guide_sm89.txt"
     if KERNEL_BACKEND == "ptx"
-    else f"{CUTEGEN_BASE_PATH}/cutegen/prompts/cuda_coding_debugging_guide.txt"
+    else (
+        f"{CUTEGEN_BASE_PATH}/cutegen/prompts/triton_coding_debugging_guide.txt"
+        if KERNEL_BACKEND == "triton"
+        else f"{CUTEGEN_BASE_PATH}/cutegen/prompts/cuda_coding_debugging_guide.txt"
+    )
 )
 DEBUG_PRINT = True # whether to print debug messages
 
