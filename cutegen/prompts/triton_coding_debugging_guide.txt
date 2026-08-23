@@ -1,63 +1,363 @@
-TRITON KERNEL COMPILE AND CORRECTNESS GUIDE
+                     TRITON CODING & DEBUGGING GUIDE
+===============================================================================
 
-Generated source contract
-- Import `triton` and `triton.language as tl`.
-- Define complete `@triton.jit` kernels and a `ModelNew` module.
-- Launch with `kernel[grid](...)` and explicit compile-time meta-parameters.
-- Preserve `validate_generated_code()` and its representative launch so Triton
-  JIT/compiler errors are classified as compile failures.
-- Do not use CUDA C++, CuTe, embedded PTX, `torch.compile`, pre-optimized
-  libraries, or PyTorch operators as computational fallbacks.
+## NON-NEGOTIABLE RULE (READ FIRST)
 
-Frequent compile failures
-- Python values used inside `@triton.jit` must be compile-time constants or
-  kernel arguments. Mark meta-parameters with `tl.constexpr`.
-- Use Triton operations inside kernels (`tl.arange`, `tl.load`, `tl.store`,
-  `tl.sum`, `tl.max`, `tl.dot`); do not call arbitrary Python or Torch code.
-- `tl.arange` dimensions and block shapes generally need compile-time
-  constants and valid power-of-two reduction extents.
-- Ensure the launch grid has the expected rank and all required kernel
-  arguments are passed in the exact order.
-- Keep pointer arithmetic and scalar types compatible. Cast deliberately when
-  mixing signed offsets, strides, and `tl.arange` values.
-- `tl.dot` has dtype, rank, tile-size, and target-specific constraints. If
-  those constraints do not fit, use a correct explicit reduction first.
-- Avoid unsupported language features, dynamic Python loops, lists, and
-  runtime tensor shape access inside a JIT kernel.
+**DO NOT change the intent of the code by making the Triton code simpler or by using less Triton.**
+- Preferably do **not** remove block tiling, `tl.dot`, staged/pipelined loops, grouped program ordering, or deliberate launch structure just to pass correctness.
+- Do **not** fall back to PyTorch computation, CUDA C++, CuTe, embedded PTX, `torch.compile`, cuBLAS, cuDNN, or CUTLASS.
+- Your job is to make the *same algorithm and same Triton optimization structure* correct: repair program mapping, block shapes, strides, pointer arithmetic, masks, reduction axes, precision, and launch wiring.
+- Do **not** change the input sizes given in the original model.
+- Preserve `ModelNew`, the custom `@triton.jit` kernel, and `validate_generated_code()`.
 
-Frequent runtime and correctness failures
-- Mask every partial load and store independently. A valid output element does
-  not imply every input element used to compute it is valid.
-- For reductions, use neutral masked values: zero for sums, `-inf` for maxima,
-  and `+inf` for minima, as appropriate.
-- Compute offsets from the real tensor strides. Do not silently assume
-  contiguous or channels-last layout unless the wrapper enforces it.
-- Use 64-bit offsets for large tensors to avoid integer overflow.
-- Preserve output shape and dtype. Keep accumulation precision consistent with
-  the reference and cast only at the final store when appropriate.
-- Match convolution stride, padding, dilation, groups, bias, and transposed
-  indexing exactly.
-- Match reduction axes and normalization formulas exactly, including epsilon
-  placement and biased/unbiased variance behavior.
-- Parameterized modules must copy the reference constructor and parameter
-  initialization; the custom kernel must consume those parameters directly.
+This is a correctness guide, not a “simplify to green tests” guide.
 
-Timing and launch guidance
-- Kernel launches are asynchronous. Do not synchronize inside `forward()`;
-  the evaluator uses CUDA events and synchronizes after recording the end
-  event.
-- Do not include benchmarking, autotuning, disk-cache deletion, or compilation
-  in `forward()`.
-- Use a fixed launch configuration. The evaluator performs warmups before 100
-  timed trials, so JIT compilation is excluded from reported steady-state
-  kernel time.
-- Favor coalesced accesses and enough programs to occupy the GPU. Avoid
-  one-program-per-large-output designs with long scalar loops.
+===============================================================================
 
-Nsight Compute guidance
-- Triton kernels are JIT-compiled CUDA kernels and can be profiled directly by
-  Nsight Compute.
-- Treat profiler counters as supporting evidence. Structural tiling, data
-  reuse, and algorithm choice take priority over minor launch tuning.
-- Triton-generated kernel names may be mangled; identify the kernel using the
-  profile's launch configuration and operation as well as its displayed name.
+## TABLE OF CONTENTS
+
+PART 0: LLM OPERATING PROCEDURE (How to debug without changing intent)
+PART 1: CORE CONCEPTS (Programs, Block Tensors, Shapes/Strides, Tiles)
+PART 2: TRITON KERNEL ORGANIZATION (STRUCTURE TO PRESERVE)
+PART 3: CORRECTNESS DEBUGGING CHECKLIST (Silent bugs & fixes)
+PART 4: PIPELINING, STAGING, AND REDUCTION GOTCHAS
+PART 5: TL.DOT / GEMM PITFALLS (Operand roles, tile shapes, precision)
+PART 6: MEMORY & OOM PITFALLS (Especially redundant materialization)
+
+===============================================================================
+PART 0: LLM OPERATING PROCEDURE
+===============================
+
+When you are given incorrect Triton code, follow this strict workflow:
+
+1) **Freeze intent**
+   * Write down what the code is trying to compute:
+     - inputs and outputs
+     - mathematical operation (GEMM, convolution, reduction, attention, stencil, etc.)
+     - invariants that must remain true (tiling, fusion, reduction structure, staging, program mapping, etc.)
+   * Confirm what you will NOT change (see Non-Negotiable Rule above).
+
+2) **Freeze convolution semantic contract (REQUIRED for conv / conv-transpose / conv-like kernels)**
+   * Before changing any convolution kernel, explicitly freeze:
+     - the logical input layout used by the task/reference
+       - e.g. `(N,C,D,H,W)` vs `(N,C,H,W,D)`
+     - the logical weight layout
+       - e.g. `(C_out, C_in/groups, Kd, Kh, Kw)`
+     - which spatial axes the kernel slides over
+     - which axis, if any, has kernel extent 1
+     - stride, padding, dilation, groups, output padding, and bias
+     - the exact output-shape formula for every spatial axis
+   * Do **NOT** silently normalize the operation to standard PyTorch conventions unless the task definition proves those conventions.
+   * If the task docstring, `get_inputs()`, reference code, and expected output shape disagree with an assumption, trust the task/reference semantics first.
+   * Required check before proposing a fix:
+     - write the expected output shape from the task definition
+     - write the output shape produced by the current kernel’s index decoding
+     - if they differ, fix semantic/layout interpretation before low-level tuning
+   * Typical failure patterns this prevents:
+     - treating `(N,C,H,W,D)` as `(N,C,D,H,W)`
+     - turning a `(K,K,1)` kernel into `(1,K,K)`
+     - confusing input-to-output and output-to-input mappings in transposed convolution
+     - forgetting group/channel offsets
+
+3) **Localize the bug without de-optimizing**
+   * You may add temporary assertions or use `tl.static_assert` / `tl.device_assert` when supported.
+   * You may temporarily use a small representative launch to isolate indexing.
+   * You may temporarily serialize a staged loop or reduce `num_stages` for diagnosis.
+   * You may NOT replace the optimized Triton structure with PyTorch operations or another backend.
+
+4) **Fix in the smallest possible Triton-native way**
+   * Typical correct fixes:
+     - wrong program-ID to tile mapping
+     - wrong shape/stride interpretation
+     - missing or incorrect load/store mask
+     - wrong neutral value for a masked reduction
+     - wrong reduction axis or block extent
+     - invalid `tl.dot` operand shape or orientation
+     - insufficient offset width
+     - wrong accumulation or output dtype
+     - launch meta-parameter mismatch
+   * Avoid global refactors. Make one coherent change, then re-test.
+
+5) **Prove the fix**
+   * Establish:
+     - what was wrong
+     - what changed
+     - why it preserves intent and the optimization structure
+     - how masks and edge tiles remain valid
+   * For GEMM-like or convolution kernels, validation means more than JIT-compiling:
+     - prove logical tensor/layout/axis roles
+     - prove the output-shape formula
+     - prove reduction dimensions and operand orientation
+
+===============================================================================
+PART 1: CORE CONCEPTS
+=====================
+
+1) **Program mapping + block shape + strides define the computation**
+   * `tl.program_id(axis)` selects a program, not a CUDA thread.
+   * Each program operates on block tensors formed by `tl.arange`, broadcasting, and pointer arithmetic.
+   * If output is plausible but wrong, assume program mapping, broadcasting, or strides are wrong until proven otherwise.
+
+2) **Tensor access = base pointer + logical indices * real strides**
+   * A pointer alone does not encode shape or layout.
+   * Derive addresses from the actual tensor strides passed by the wrapper.
+   * Do not assume contiguous, channels-last, alignment, or divisibility unless the wrapper explicitly enforces it.
+   * Use 64-bit address offsets when products of indices and strides can exceed 32-bit range.
+
+3) **Block tensors and broadcasting are coordinate transforms**
+   * `offs_m[:, None]` and `offs_n[None, :]` create a 2D logical tile; they do not copy data.
+   * A transposed broadcast or pointer expression can silently compute the wrong contraction while preserving valid shapes.
+   * State the logical shape and role of every block tensor before changing it.
+
+4) **Compile-time values are different from runtime values**
+   * Mark launch meta-parameters with `tl.constexpr`.
+   * Python control flow inside a JIT kernel must be resolvable by Triton or expressed with Triton operations.
+   * `tl.arange` bounds and most block shapes must be compile-time constants; supported ranges are compiler/target constrained and commonly power-of-two.
+   * Do not call arbitrary Python or Torch functions from inside `@triton.jit`.
+
+===============================================================================
+PART 2: TRITON KERNEL ORGANIZATION (STRUCTURE TO PRESERVE)
+===================================================================
+
+A correct optimized Triton implementation typically has these layers; **do not delete these layers**:
+
+A) **Python launch glue**
+   - imports `triton` and `triton.language as tl`
+   - defines complete `@triton.jit` kernels
+   - preserves `ModelNew` constructor and parameters
+   - allocates the output
+   - supplies dimensions, strides, and fixed meta-parameters
+   - launches asynchronously on PyTorch’s current CUDA stream
+   - preserves a minimal `validate_generated_code()` launch so JIT failures are classified as compile failures
+
+B) **Program/CTA mapping**
+   - maps one or more program IDs to output tiles
+   - may use grouped ordering to improve cache reuse
+
+C) **Global-memory block views**
+   - forms pointer blocks or block pointers for each operand
+   - applies independent bounds masks/boundary checks
+
+D) **Staged/reduction loop**
+   - advances pointers through K, channels, spatial taps, or another reduction axis
+   - preserves data reuse and pipeline structure
+
+E) **Compute**
+   - uses `tl.dot`, explicit elementwise products plus reductions, or fused pointwise math
+
+F) **Epilogue/store**
+   - applies normalization, activation, triangular/causal masks, bias, or final casts
+   - stores with the correct independent output mask
+
+For non-matmul kernels, the same structure applies: programs own logical tiles, load valid input regions, compute, and store valid output regions.
+
+===============================================================================
+PART 3: CORRECTNESS DEBUGGING CHECKLIST
+=======================================
+
+Fix in this order:
+
+A) **Shape/Layout/Stride sanity**
+1. Confirm every input/output logical shape.
+2. Confirm every real stride passed from Python.
+3. Write the exact pointer formula for each operand.
+4. Spot-check several logical coordinates and their physical addresses.
+5. Confirm all index/stride products use enough integer width.
+6. If the optimized path requires contiguous inputs, enforce `.contiguous()` once in the wrapper; do not materialize repeatedly.
+
+B) **Program/grid mapping**
+7. Confirm the grid rank matches every `tl.program_id(axis)` use.
+8. Confirm flattened/grouped program IDs decode to unique intended output tiles.
+9. Confirm no two programs write the same output unless atomics are deliberately required.
+10. Confirm the grid covers every output element without launching a pathological number of empty programs.
+
+C) **Load path correctness**
+11. Validate each load address independently from the output address.
+12. Mask every partial input tile independently. A valid output does not imply every input used by it is valid.
+13. Use the correct masked value:
+    - `0` for additive sums and dot-product padding
+    - `-inf` for maxima
+    - `+inf` for minima
+14. With `tl.make_block_ptr`, verify shape, strides, offsets, block shape, order, and boundary checks agree.
+15. Do not use `other` values that introduce NaNs or change a reduction identity.
+
+D) **Compute correctness**
+16. Confirm reduction axes and extents.
+17. Confirm broadcasting does not duplicate or omit a dimension.
+18. Confirm accumulator precision and cast only at the appropriate final point.
+19. For fp32 `tl.dot`, verify the selected input precision preserves the intended numerical contract; do not silently accept TF32 if the comparison requires IEEE behavior.
+20. For softmax/attention, use a stable max-subtraction formulation and preserve online-softmax rescaling exactly.
+21. For variance/norm, preserve epsilon placement, reduction axes, and biased/unbiased behavior.
+
+E) **Store/edge correctness**
+22. Derive the output mask from output coordinates only.
+23. Mask every partial store.
+24. Preserve output shape, dtype, and layout.
+25. Ensure epilogue masks (causal, triangular, padding, channel/group) use the correct coordinate system.
+26. Check empty and degenerate extents when the benchmark contract allows them.
+
+F) **Parameterized modules**
+27. Copy the reference constructor signature and parameter initialization.
+28. The Triton kernel must directly consume weights, bias, and other parameters.
+29. Do not create replacement random parameters or recompute the operation with Torch.
+30. Preserve parameter dtype/device behavior when constructing `ModelNew`.
+
+G) **High-frequency LLM failure modes (check before anything else)**
+1. Do NOT worry about multi-GPU behavior; this harness evaluates one GPU.
+2. Do NOT assume contiguity, stride, alignment, or divisibility without enforcing it.
+3. Do NOT omit masks merely because benchmark dimensions appear divisible; prove every operand access.
+4. Do NOT use PyTorch computation in `forward()` as a fallback.
+5. Do NOT add multiple alternative kernels or dispatch paths unless the original optimized structure requires them.
+6. Do NOT synchronize inside `forward()`.
+7. Keep kernel arguments and launch meta-parameters in exactly matching order.
+
+H) **Distinguish “correct but slow” from “incorrect semantics”**
+
+For convolution and GEMM-like kernels, a kernel may be fully correct yet structurally poor.
+
+Classify it before fixing:
+
+1. **Semantic/layout bug**
+   - wrong axis order or stride
+   - wrong weight layout
+   - wrong output-shape formula
+   - wrong transposed-convolution mapping
+   - wrong group/channel interpretation
+
+2. **Program/tile bug**
+   - wrong program-ID mapping
+   - wrong block tensor orientation
+   - wrong K/reduction traversal
+   - incorrect edge masks or overlapping stores
+
+3. **Correct but structurally slow**
+   - one program loops over a huge output
+   - poor coalescing
+   - too little parallelism
+   - no useful operand reuse
+   - direct convolution with excessive repeated loads
+
+Do not misdiagnose a naive but correct kernel as a correctness failure. Once correctness passes, switch to performance diagnosis.
+
+===============================================================================
+PART 4: PIPELINING, STAGING, AND REDUCTION GOTCHAS
+==================================================
+
+**Pipeline correctness rules:**
+- A staged reduction loop must have a clear pointer position and valid mask for every iteration.
+- When changing `BLOCK_K`, re-check loop bounds, pointer increments, masks, and `tl.dot` shape constraints together.
+- `num_stages` is a compiler pipeline hint; changing it must not change mathematical indexing.
+- If using `tl.range` pipeline attributes, preserve loop-carried accumulator semantics.
+- For diagnosis, temporarily reduce staging complexity, then restore the intended pipeline once fixed.
+
+**Reduction correctness rules:**
+- Reduce along the intended axis, not merely the axis that makes shapes compile.
+- Make block extents compatible with Triton reduction requirements.
+- Mask before reduction with the mathematical identity.
+- Preserve stable algorithms for softmax, log-sum-exp, norms, and losses.
+- For multi-pass conceptual algorithms fused into one kernel, verify each program has all data needed; programs cannot generally synchronize with each other inside one launch.
+- Do not replace a required cross-program reduction with racy non-atomic stores.
+
+**Symptoms:**
+- correct only for divisible dimensions → edge mask or loop-tail bug
+- correct only for one block size → reduction extent or pointer-step bug
+- nondeterministic output → overlapping/racy stores or invalid memory access
+- NaNs only at edges → masked value or out-of-bounds load bug
+- large error only for long reductions → accumulation precision or unstable formula
+
+===============================================================================
+PART 5: TL.DOT / GEMM PITFALLS
+==============================
+
+- `tl.dot` operand rank, dtype, tile size, and target constraints must all be valid.
+- A compiling `tl.dot` does not prove the operand roles are correct.
+- The logical contraction must be `C[m,n] += A[m,k] * B[k,n]`.
+- Do not transpose an operand merely to satisfy the compiler without re-proving address mapping.
+- Keep accumulation precision consistent with the reference.
+- RTX 4090 is sm_89: do not assume sm_90-only mechanisms or behavior.
+
+For GEMM-like or implicit-GEMM convolution kernels, explicitly write:
+
+- GEMM dimensions:
+  - `M` = output rows/features/channels
+  - `N` = output columns/spatial positions
+  - `K` = reduction dimension
+
+- Operand roles:
+  - `A(M,K)`
+  - `B(K,N)`
+  - `C(M,N)`
+
+Then prove all levels agree:
+
+1. **Global-memory semantics**
+   - A pointers decode `(m,k)`.
+   - B pointers decode `(k,n)`.
+   - C pointers decode `(m,n)`.
+   - For convolution, decode `k -> (ic, kd, kh, kw, ...)` and `n -> (od, oh, ow, ...)`.
+   - Include group offsets.
+
+2. **Block-tensor semantics**
+   - A loaded block is `(BLOCK_M, BLOCK_K)`.
+   - B loaded block is `(BLOCK_K, BLOCK_N)`.
+   - Accumulator is `(BLOCK_M, BLOCK_N)`.
+   - Broadcasting and pointer increments preserve those roles on every K iteration.
+
+3. **Implicit-GEMM convolution warning**
+   - The most common structural bug is loading B as `(N,K)` rather than `(K,N)`.
+   - Re-check B pointer broadcasting, spatial decoding, K decoding, and `tl.dot` orientation together.
+   - The same values in a different orientation are not equivalent.
+
+4. **CTA/output tiling sanity**
+   - Every program maps to an intended output tile.
+   - Grouped ordering may change scheduling order, not logical tile identity.
+   - Ragged M/N/K edges have independent masks.
+
+5. **Do not trust an epilogue-only fix**
+   - Output masking cannot repair an incorrect contraction.
+   - If interior elements are wrong, inspect operand mapping and K traversal first.
+
+6. **Required proof before declaring success**
+   - State:
+     - A block shape and logical role
+     - B block shape and logical role
+     - accumulator shape
+     - K-loop bounds and increments
+   - Explain why they implement `C[m,n] += A[m,k] * B[k,n]`.
+
+If a patch makes `tl.dot` compile but does not re-prove these roles, treat the kernel as still suspect.
+
+===============================================================================
+PART 6: MEMORY & OOM PITFALLS (IMPORTANT FOR LLMs)
+=================================================
+
+1) **Redundant materialization causes OOM**
+
+Common causes:
+- Calling `.contiguous()` repeatedly on large inputs.
+- Creating multiple full-size outputs or reference-like intermediates.
+- Using `.repeat` or another materializing operation where indexing/broadcasting suffices.
+- Allocating tensors inside repeated validation or timing paths.
+- Choosing enormous Triton block tensors that cause excessive register pressure or compilation failure.
+
+2) **Fix OOM without changing kernel intent**
+- Materialize a required contiguous input once in the wrapper.
+- Allocate exactly one output when possible.
+- Express broadcasting and fusion inside the Triton kernel.
+- Keep `validate_generated_code()` representative but minimal.
+- Reduce block shape or live intermediates when register/shared-memory pressure is the cause, while preserving the algorithm.
+
+Do NOT fix OOM by replacing the Triton computation with PyTorch or another backend.
+
+3) **Diagnostic checklist**
+- Does `forward()` clone or materialize any large tensor more than once?
+- Are large temporary outputs retained?
+- Is a broadcast accidentally materialized in Python?
+- Is one Triton program holding too many block tensors simultaneously?
+- Does a block shape create unreasonable register pressure?
+- Is the validation hook allocating full benchmark-sized tensors unnecessarily?
+
+===============================================================================
+
+END
+===
