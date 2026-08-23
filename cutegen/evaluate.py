@@ -203,8 +203,13 @@ def load_custom_model(model_custom_src: str, context: dict, metadata: dict, buil
     os.close(write_fd)
 
     try:
-        compile(model_custom_src, "<string>", "exec")
-        exec(model_custom_src, context)
+        generated_source_path = build_path / "generated_model.py"
+        generated_source_path.write_text(model_custom_src)
+        context["__file__"] = str(generated_source_path)
+        compiled_source = compile(
+            model_custom_src, str(generated_source_path), "exec"
+        )
+        exec(compiled_source, context)
         validator = context.get("validate_generated_code")
         if KERNEL_BACKEND in {"ptx", "triton"} and callable(validator):
             validator()

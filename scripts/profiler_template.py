@@ -11,6 +11,7 @@ import os, sys, shutil
 import re
 import glob
 import importlib.util
+from pathlib import Path
 print("PYTHON =", sys.executable)
 print("CWD =", os.getcwd())
 print("TORCH_EXTENSIONS_DIR =", os.environ.get("TORCH_EXTENSIONS_DIR"))
@@ -162,8 +163,13 @@ def load_custom_model(gen_src: str, context: dict, build_dir: str):
 
     context["PREBUILT_EXTS"] = prebuilt_exts
 
-    compile(wrapped_src, "<string>", "exec")
-    exec(wrapped_src, context)
+    generated_source_path = Path(build_dir) / "generated_model.py"
+    generated_source_path.write_text(wrapped_src)
+    context["__file__"] = str(generated_source_path)
+    compiled_source = compile(
+        wrapped_src, str(generated_source_path), "exec"
+    )
+    exec(compiled_source, context)
 
     ModelNew = context.get("ModelNew")
     if ModelNew is None:
