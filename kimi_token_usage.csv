@@ -826,3 +826,13 @@ kernel,server_type,model,input_tokens,output_tokens,total_tokens
 103_Conv2D_SquareKernel11.py,kimi,kimi-k3,7295,17173,24468
 103_Conv2D_SquareKernel11.py,kimi,kimi-k3,8092,14369,22461
 103_Conv2D_SquareKernel11.py,kimi,kimi-k3,8862,32000,40862
+99_TripletMarginLoss.py,kimi,kimi-k3,6382,5720,12102
+99_TripletMarginLoss.py,kimi,kimi-k3,5714,1887,7601
+99_TripletMarginLoss.py,kimi,kimi-k3,5954,8745,14699
+99_TripletMarginLoss.py,kimi,kimi-k3,6594,5915,12509
+99_TripletMarginLoss.py,kimi,kimi-k3,6340,3112,9452
+99_TripletMarginLoss.py,kimi,kimi-k3,6428,2557,8985
+99_TripletMarginLoss.py,kimi,kimi-k3,7057,1710,8767
+99_TripletMarginLoss.py,kimi,kimi-k3,7057,3399,10456
+99_TripletMarginLoss.py,kimi,kimi-k3,7352,11869,19221
+99_TripletMarginLoss.py,kimi,kimi-k3,7361,12527,19888

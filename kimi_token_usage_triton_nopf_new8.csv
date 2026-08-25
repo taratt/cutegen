@@ -1,0 +1,7 @@
+kernel,server_type,model,input_tokens,output_tokens,total_tokens
+6_Matmul_with_large_K_dimension_.py,kimi,kimi-k3,1236,5115,6351
+6_Matmul_with_large_K_dimension_.py,kimi,kimi-k3,4831,7167,11998
+6_Matmul_with_large_K_dimension_.py,kimi,kimi-k3,4962,2711,7673
+6_Matmul_with_large_K_dimension_.py,kimi,kimi-k3,4961,4675,9636
+6_Matmul_with_large_K_dimension_.py,kimi,kimi-k3,4961,2110,7071
+6_Matmul_with_large_K_dimension_.py,kimi,kimi-k3,4961,2533,7494
