@@ -1,0 +1,13 @@
+kernel,server_type,model,input_tokens,output_tokens,total_tokens
+6_Matmul_with_large_K_dimension_.py,anthropic,claude-sonnet-5,2891,4754,7645
+14_Matmul_for_upper_triangular_matrices.py,anthropic,claude-sonnet-5,3000,4345,7345
+50_conv_standard_2D__square_input__square_kernel.py,anthropic,claude-sonnet-5,2798,10394,13192
+61_conv_transposed_3D__square_input__square_kernel.py,anthropic,claude-sonnet-5,3353,16602,19955
+70_conv_transposed_3D__asymmetric_input__square_kernel.py,anthropic,claude-sonnet-5,3442,24036,27478
+75_conv_transposed_2D_asymmetric_input_asymmetric_kernel_strided__grouped____padded____dilated__.py,anthropic,claude-sonnet-5,3414,11411,14825
+105_LayerNorm_BigMean.py,anthropic,claude-sonnet-5,3008,4152,7160
+107_Conv2D_SquareKernel3_bf16.py,anthropic,claude-sonnet-5,2797,10146,12943
+107_Conv2D_SquareKernel3_bf16.py,anthropic,claude-sonnet-5,9554,6048,15602
+107_Conv2D_SquareKernel3_bf16.py,anthropic,claude-sonnet-5,6977,537,7514
+107_Conv2D_SquareKernel3_bf16.py,anthropic,claude-sonnet-5,9667,41387,51054
+107_Conv2D_SquareKernel3_bf16.py,anthropic,claude-sonnet-5,7447,904,8351

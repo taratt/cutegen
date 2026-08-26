@@ -1,0 +1,11 @@
+kernel,server_type,model,input_tokens,output_tokens,total_tokens
+1_Square_matrix_multiplication_.py,anthropic,claude-sonnet-5,1940,1648,3588
+1_Square_matrix_multiplication_.py,anthropic,claude-sonnet-5,7558,730,8288
+1_Square_matrix_multiplication_.py,anthropic,claude-sonnet-5,7558,3207,10765
+1_Square_matrix_multiplication_.py,anthropic,claude-sonnet-5,7811,2280,10091
+1_Square_matrix_multiplication_.py,anthropic,claude-sonnet-5,7912,849,8761
+1_Square_matrix_multiplication_.py,anthropic,claude-sonnet-5,9111,3340,12451
+1_Square_matrix_multiplication_.py,anthropic,claude-sonnet-5,5232,293,5525
+1_Square_matrix_multiplication_.py,anthropic,claude-sonnet-5,7912,1400,9312
+1_Square_matrix_multiplication_.py,anthropic,claude-sonnet-5,9111,3804,12915
+1_Square_matrix_multiplication_.py,anthropic,claude-sonnet-5,5783,330,6113
