@@ -1,4 +1,5 @@
 from cutegen.config import LLM_CONFIG_CODEGEN, CUTEGEN_BASE_PATH, INITIAL_PROMPT_FILE, OPTIMIZE_PROMPT_FILE, EDIT_PROMPT_FILE, FEEDBACK_MODE, TUNE_PROMPT_FILE, USE_PROFILING, PROFILING_START_DEPTH
+from cutegen.backend_runtime import effective_backend, prompt_files_for_backend, ptx_optimize_addendum, cute_to_ptx_enabled
 from cutegen.llm_api import create_llm_server_from_config
 from cutegen.util import parse_code_and_edit, read_file, debug_print
 from cutegen.node import Node
@@ -9,6 +10,24 @@ import random
 from typing import Dict, Any, List
 
 from typing import Dict, Any, List
+
+
+def _optimize_prompt_path(node: Node) -> str:
+    backend = effective_backend(getattr(node, "metadata", None))
+    if cute_to_ptx_enabled() and backend != "cute":
+        return prompt_files_for_backend(backend)[1]
+    return OPTIMIZE_PROMPT_FILE
+
+
+def _edit_prompt_path(node: Node) -> str:
+    return _optimize_prompt_path(node)
+
+
+def _optimize_addendum(node: Node, addendum: str) -> str:
+    backend = effective_backend(getattr(node, "metadata", None))
+    if cute_to_ptx_enabled() and backend == "ptx":
+        return (addendum or "") + "\n" + ptx_optimize_addendum()
+    return addendum or ""
 
 def build_nsight_addendum_from_metrics(metrics: Dict[str, Any]) -> str:
     if not metrics:
@@ -142,8 +161,9 @@ def codegen_initial_original(node: Node, addendum=""):
 
 def codegen_optimize_original(node: Node, addendum=""):
     llm_server = create_llm_server_from_config(random.choice(LLM_CONFIG_CODEGEN))
-    with open(OPTIMIZE_PROMPT_FILE, "r") as file:
+    with open(_optimize_prompt_path(node), "r") as file:
         optimize_prompt = file.read()
+    addendum = _optimize_addendum(node, addendum)
     prompt = optimize_prompt.replace("<NODE_PRV_SRC>", node.prev_src)
     prompt = prompt.replace("<REFERENCE_TIME>", str(node.ref_time or "UNKNOWN"))
     prompt = prompt.replace(
@@ -177,8 +197,9 @@ def codegen_edits(node: Node, addendum=""):
         # else:
         #     with open(TUNE_PROMPT_FILE, "r") as file:
         #         edit_prompt = file.read()
-    with open(EDIT_PROMPT_FILE, "r") as file:
+    with open(_edit_prompt_path(node), "r") as file:
         edit_prompt = file.read()
+    addendum = _optimize_addendum(node, addendum)
     prompt = edit_prompt.replace("<NODE_PRV_SRC>", get_numbered_lines(src_lines))
     prompt = prompt.replace(
         "<REFERENCE_TIME>",

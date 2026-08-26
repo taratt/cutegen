@@ -9,9 +9,24 @@ from cutegen.config import (
     DEBUG_GUIDE_FILE,
     KERNEL_BACKEND,
 )
+from cutegen.backend_runtime import effective_backend, prompt_files_for_backend, cute_to_ptx_enabled
 from cutegen.llm_api import create_llm_server_from_config
 from cutegen.util import extract_first_code, read_file, get_numbered_lines, src_to_lines, lines_to_src, debug_print
 from cutegen.code_editor import code_edit_apply_patches
+
+
+def _debug_guide_for_node(node: Node) -> str:
+    backend = effective_backend(getattr(node, "metadata", None))
+    if cute_to_ptx_enabled() and backend != KERNEL_BACKEND:
+        return prompt_files_for_backend(backend)[2]
+    return DEBUG_GUIDE_FILE
+
+
+def _backend_label_for_node(node: Node) -> str:
+    backend = effective_backend(getattr(node, "metadata", None))
+    if backend == "ptx":
+        return "PTX and Python driver glue"
+    return backend.upper()
 
 def get_compile_suggestions(node: Node):
     llm_server = create_llm_server_from_config(random.choice(LLM_CONFIG_CODEGEN))
@@ -26,7 +41,7 @@ The reference code, which you can use to reason about the intended operation, is
 ```
 {node.ref}
 Reason about what is the underlying issue. Generate some useful suggestions for fixing the compile error; here's an doc that might have useful information:
-{read_file(DEBUG_GUIDE_FILE)}
+{read_file(_debug_guide_for_node(node))}
 """
     llm_response = llm_server(prompt)
     return llm_response
@@ -44,7 +59,7 @@ The reference code, which you can use to reason about the intended operation, is
 ```
 {node.ref}
 Generate some useful suggestions for fixing the correctness error; here's a doc that might have useful information:
-{read_file(DEBUG_GUIDE_FILE)}
+{read_file(_debug_guide_for_node(node))}
 """
     llm_response = llm_server(prompt)
     return llm_response
@@ -55,7 +70,7 @@ def _fix_compile(node: Node, addendum="", retrieve=False):
         suggestions = get_compile_suggestions(node)
     else:
         suggestions = ""
-    backend_name = "PTX and Python driver glue" if KERNEL_BACKEND == "ptx" else KERNEL_BACKEND.upper()
+    backend_name = _backend_label_for_node(node)
     prompt = f"""The following {backend_name} code is not compiling:
 ```
 {node.src}
@@ -80,11 +95,7 @@ def _fix_compile_edits(node: Node, addendum="", retrieve=False):
     else:
         suggestions = ""
     src_lines = src_to_lines(str(node.src))
-    backend_name = (
-        "PTX and Python driver glue"
-        if KERNEL_BACKEND == "ptx"
-        else KERNEL_BACKEND.upper()
-    )
+    backend_name = _backend_label_for_node(node)
 
     prompt_content = read_file(CUTEGEN_BASE_PATH + "/cutegen/prompts/code_editor_prompt.md")
     output_instruction = "Output your reasoning for the edits in <reasoning></reasoning> tags. Output the edits in a codeblock ```json and ```."
@@ -132,7 +143,7 @@ def _fix_correct_edits(node: Node, addendum="", retrieve=False):
     prompt_content = read_file(CUTEGEN_BASE_PATH + "/cutegen/prompts/code_editor_prompt.md")
     output_instruction = "Output your reasoning for the edits in <reasoning></reasoning> tags. Output the edits in a codeblock ```json and ```."
 
-    backend_name = "PTX and Python driver glue" if KERNEL_BACKEND == "ptx" else KERNEL_BACKEND.upper()
+    backend_name = _backend_label_for_node(node)
     prompt = f"""The following {backend_name} code is not correct:
 ```
 {get_numbered_lines(src_lines)}
@@ -174,11 +185,7 @@ def _fix_correct(node: Node, addendum="", retrieve=False):
         suggestions = get_correctness_suggestions(node)
     else:
         suggestions = ""
-    backend_name = (
-        "PTX and Python driver glue"
-        if KERNEL_BACKEND == "ptx"
-        else KERNEL_BACKEND.upper()
-    )
+    backend_name = _backend_label_for_node(node)
     prompt = f"""The following code is not correct:
 ```
 {node.src}

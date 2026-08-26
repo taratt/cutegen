@@ -26,7 +26,8 @@ def run(node: Node, code_optimize_addendum="", codegen_initial_addendum="", fix_
                 else:
                     pass # already supplied initial src, don't regenerate
             else:
-                node.src = codegen_optimize(node, addendum=code_optimize_addendum, mode=CODEGEN_OPTIMIZE_MODE)
+                optimize_mode = node.metadata.get("force_optimize_mode") or CODEGEN_OPTIMIZE_MODE
+                node.src = codegen_optimize(node, addendum=code_optimize_addendum, mode=optimize_mode)
                 if node.src == "":
                     debug_print(f"Node {node.uuid} codegen_optimize failed, retrying")
                     retry_count += 1

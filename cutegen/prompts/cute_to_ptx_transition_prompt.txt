@@ -1,0 +1,38 @@
+You previously produced a correct CuTe / CUDA `load_inline` implementation.
+Convert it into an equivalent NVIDIA PTX implementation that uses
+`cutegen.ptx_runtime.PtxModule`.
+
+TARGET_GPU: NVIDIA GeForce RTX 4090
+TARGET_COMPUTE_CAPABILITY: 8.9
+TARGET_ARCHITECTURE: sm_89
+
+The PyTorch reference architecture is:
+```python
+<REF>
+```
+
+The correct CuTe / CUDA source that already passed compile + correctness is:
+```python
+<CUTE_SRC>
+```
+
+Compiler-extracted PTX dump from that build (reference only; clean it up):
+```
+<EXTRACTED_PTX>
+```
+
+Write a complete Python `ModelNew` that:
+- Embeds a cleaned PTX module in `PTX_SOURCE`
+- Lazily constructs `PtxModule(PTX_SOURCE)`
+- Defines `validate_generated_code()` that looks up the entry with `.function(...)`
+- Implements the same semantics as the reference / CuTe kernel using
+  `module.launch(...)` on the current PyTorch stream
+- Uses only `cutegen.ptx_runtime` helpers (`i32`, `u32`, `i64`, `u64`, `f32`, `f64`)
+- Targets `.target sm_89` and `.address_size 64`
+- Does NOT use CUDA C++, CuTe, `load_inline`, CUTLASS, Triton, or PyTorch math ops
+
+Prefer readable hand-authored PTX derived from the CuTe algorithm. You may use
+the extracted dump to recover entry argument order / shapes, but strip
+libcudacxx noise and mangled-only junk when a clean `.entry` is clearer.
+
+Return exactly one fenced Python code block and no other text.

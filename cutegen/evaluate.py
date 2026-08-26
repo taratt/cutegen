@@ -27,6 +27,7 @@ from cutegen.util import set_seed, debug_print, acquire_gpu, release_gpu, remove
 
 ####### CONSTANTS #######
 from cutegen.config import CUTEGEN_BASE_PATH, LOAD_MODEL_BACKOFF_TIME, RUN_MODEL_BACKOFF_TIME, GPU_REQ_SPACE, CPU_REQ_SPACE, BUILD_DIRECTORY_BASE, EVAL_RUN_TIMEOUT, BENCHMARK_TORCH_COMPILE, TORCH_COMPILE_MODE, EVAL_COLD_CACHE, NSIGHT_COMPUTE_BIN, NSIGHT_COMPUTE_SET, USE_PROFILING, KERNEL_BACKEND
+from cutegen.backend_runtime import effective_backend
 
 
 import shutil
@@ -211,7 +212,8 @@ def load_custom_model(model_custom_src: str, context: dict, metadata: dict, buil
         )
         exec(compiled_source, context)
         validator = context.get("validate_generated_code")
-        if KERNEL_BACKEND in {"ptx", "triton"} and callable(validator):
+        backend = effective_backend(metadata)
+        if backend in {"ptx", "triton"} and callable(validator):
             validator()
         torch.cuda.synchronize()
     except Exception as e:
@@ -1253,7 +1255,7 @@ def run_nsight_profile(
         metadata["profile_prebuild_meta"] = prebuild_meta
         return None 
     so_files = glob.glob(os.path.join(profile_build_directory, "**", "*.so"), recursive=True)
-    if KERNEL_BACKEND not in {"ptx", "triton"} and not so_files:
+    if effective_backend(metadata) not in {"ptx", "triton"} and not so_files:
         metadata["profile_error"] = (
             f"No prebuilt .so found under {profile_build_directory}"
         )
@@ -1448,6 +1450,14 @@ def evaluate(node: Node, get_time=True, get_profile=USE_PROFILING, torch_compile
         release_gpu(device, gpu_lock_fd)
         node.perf = perf_stats
         debug_print(f"Node {node.uuid} profile: {perf_stats}")
+
+    # Optional cute→PTX: capture embedded PTX before build cleanup (gated).
+    try:
+        from cutegen.cute_to_ptx import maybe_store_extracted_ptx
+
+        maybe_store_extracted_ptx(node, build_directory)
+    except Exception as extract_exc:
+        debug_print(f"Node {node.uuid}: cute→PTX extract hook skipped: {extract_exc}")
 
     remove_build_directory(build_directory)
     return node
