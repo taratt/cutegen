@@ -1,0 +1,5 @@
+kernel,server_type,model,input_tokens,output_tokens,total_tokens
+1_Square_matrix_multiplication_.py,kimi,kimi-k3,1230,3267,4497
+1_Square_matrix_multiplication_.py,kimi,kimi-k3,5213,1722,6935
+1_Square_matrix_multiplication_.py,kimi,kimi-k3,5197,3929,9126
+1_Square_matrix_multiplication_.py,kimi,kimi-k3,5197,4125,9322

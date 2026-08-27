@@ -23,6 +23,7 @@ TOKEN_CSV_BY_PATH: dict[str, list[str]] = {
         "sonnet5_cuda_prof_token_usage.csv",
         "sonnet5_token_usage_cuda_profiled_new8.csv",
     ],
+    "cuda/level1-profiled-from-start": ["kimi_token_usage_cuda_from_start.csv.from_10106"],
     "cuda/level1-profiled-from-start-sonnet5": [
         "sonnet5_token_usage_cuda_from_start.csv",
         "sonnet5_token_usage_cuda_from_start_new8.csv",
@@ -39,6 +40,9 @@ TOKEN_CSV_BY_PATH: dict[str, list[str]] = {
         "sonnet5_token_usage_cute_from_start_new8.csv",
     ],
     "cute-ptx/level1-nopf-sonnet5": ["sonnet5_token_usage_cute_to_ptx.csv"],
+    "cute-ptx/level1-profiled-from-start-sonnet5": [
+        "sonnet5_token_usage_cute_to_ptx_from_start.csv.from_120",
+    ],
     "ptx/level1-no-profile": ["kimi_token_usage_ptx_nopf_new8.csv"],
     "ptx/level1-no-profile-sonnet5": ["sonnet5_token_usage_ptx_nopf.csv"],
     "ptx/level1-profiled": [
@@ -49,6 +53,7 @@ TOKEN_CSV_BY_PATH: dict[str, list[str]] = {
         "sonnet5_token_usage_ptx_delayed.csv",
         "sonnet5_token_usage_ptx_profiled_new8.csv",
     ],
+    "ptx/level1-profiled-from-start": ["kimi_token_usage_ptx_from_start.csv"],
     "ptx/level1-profiled-from-start-sonnet5": ["sonnet5_token_usage_ptx_from_start.csv"],
     "triton/level1-no-profile": ["kimi_token_usage_triton_nopf_new8.csv"],
     "triton/level1-no-profile-sonnet5": [
@@ -56,7 +61,11 @@ TOKEN_CSV_BY_PATH: dict[str, list[str]] = {
         "sonnet5_token_usage_triton_nopf.csv",
     ],
     "triton/level1-profiled-sonnet5": ["sonnet5_token_usage_triton_delayed.csv"],
+    "triton/level1-profiled-from-start": [
+        "kimi_token_usage_triton_from_start.csv.from_10707",
+    ],
     "triton/level1-profiled-from-start-sonnet5": [
+        "sonnet5_token_usage_triton_from_start.csv",
         "sonnet5_token_usage_triton_from_start_new8.csv",
     ],
 }
