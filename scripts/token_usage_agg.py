@@ -18,7 +18,10 @@ TOKEN_CSV_BY_PATH: dict[str, list[str]] = {
         "kimi_token_usage_cuda_nopf_new8.csv",
     ],
     "cuda/level1-no-profile-sonnet5": ["sonnet5_token_usage_cuda_nopf.csv"],
-    "cuda/level1-profiled": ["kimi_token_usage_cuda_delayed_120.csv"],
+    "cuda/level1-profiled": [
+        "kimi_token_usage_cuda_delayed_120.csv",
+        "kimi_token_usage_cuda_delayed_new8.csv",
+    ],
     "cuda/level1-profiled-sonnet5": [
         "sonnet5_cuda_prof_token_usage.csv",
         "sonnet5_token_usage_cuda_profiled_new8.csv",
@@ -29,7 +32,17 @@ TOKEN_CSV_BY_PATH: dict[str, list[str]] = {
         "sonnet5_token_usage_cuda_from_start_new8.csv",
     ],
     "cute/level1-no-profile-sonnet5": ["sonnet5_token_usage_cute_nopf.csv"],
-    "cute/level1-profiled": ["kimi_token_usage.csv"],
+    "cute/level1-no-profile-sonnet5-minimal": [
+        "sonnet5_token_usage_cute_nopf_minimal.csv",
+    ],
+    "cute/level1-nopf-sonnet5-minimal-d0": [
+        "sonnet5_token_usage_cute_minimal_d0.csv",
+    ],
+    "cute/level1-profiled": [
+        "kimi_token_usage.csv",
+        "kimi_token_usage_cute_delayed_new8.csv",
+    ],
+    "cute/level1_from_start": ["kimi_token_usage_cute_from_start_new8.csv"],
     "cute/level1-profiled-sonnet5": [
         "sonnet5_token_usage.csv",
         "sonnet5_token_usage_cute_profiled_new8.csv",
@@ -48,6 +61,7 @@ TOKEN_CSV_BY_PATH: dict[str, list[str]] = {
     "ptx/level1-profiled": [
         "kimi_token_usage_ptx_remote.csv",
         "kimi_token_usage_ptx_delayed.csv",
+        "kimi_token_usage_ptx_delayed_new8.csv",
     ],
     "ptx/level1-profiled-sonnet5": [
         "sonnet5_token_usage_ptx_delayed.csv",
@@ -60,6 +74,7 @@ TOKEN_CSV_BY_PATH: dict[str, list[str]] = {
         "sonnet5_token_usage_triton_nopf_guide_v2.csv",
         "sonnet5_token_usage_triton_nopf.csv",
     ],
+    "triton/level1-profiled": ["kimi_token_usage_triton_delayed_sample19.csv"],
     "triton/level1-profiled-sonnet5": ["sonnet5_token_usage_triton_delayed.csv"],
     "triton/level1-profiled-from-start": [
         "kimi_token_usage_triton_from_start.csv.from_10707",
