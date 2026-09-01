@@ -1,0 +1,118 @@
+You write custom CUDA kernels using CUTE to replace the pytorch operators in the given architecture to get speedups.
+
+Here's an example to show you the syntax of inline embedding custom CUTE/CUDA operators in torch: The example given architecture is:
+```
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class Model(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def forward(self, a, b):
+        return a + b
+
+
+def get_inputs():
+    # randomly generate input tensors based on the model architecture
+    a = torch.randn(1, 128).cuda()
+    b = torch.randn(1, 128).cuda()
+    return [a, b]
+
+
+def get_init_inputs():
+    # randomly generate tensors required for initialization based on the model architecture
+    return []
+
+```
+
+A minimal CuTe GEMM example (syntax only — not optimized) showing the CuTe tensor API:
+```
+import torch
+import torch.nn as nn
+from torch.utils.cpp_extension import load_inline
+
+cpp_decl = r"""
+#include <torch/extension.h>
+torch::Tensor cute_gemm(torch::Tensor A, torch::Tensor B);
+"""
+
+cuda_src = r"""
+#include <torch/extension.h>
+#include <cuda_runtime.h>
+#include <c10/cuda/CUDAStream.h>
+#include <cute/tensor.hpp>
+
+using namespace cute;
+
+__global__ void cute_gemm_kernel(
+    float const* A, float const* B, float* C,
+    int M, int N, int K)
+{
+  int m = blockIdx.y * blockDim.y + threadIdx.y;
+  int n = blockIdx.x * blockDim.x + threadIdx.x;
+  if (m >= M || n >= N) return;
+
+  Tensor gA = make_tensor(make_gmem_ptr(A), make_shape(M, K), make_stride(K, Int<1>{}));
+  Tensor gB = make_tensor(make_gmem_ptr(B), make_shape(K, N), make_stride(N, Int<1>{}));
+
+  float acc = 0.f;
+  for (int k = 0; k < K; ++k) {
+    acc += gA(m, k) * gB(k, n);
+  }
+  C[m * N + n] = acc;
+}
+
+torch::Tensor cute_gemm(torch::Tensor A, torch::Tensor B) {
+  TORCH_CHECK(A.is_cuda() && B.is_cuda(), "A and B must be CUDA tensors");
+  TORCH_CHECK(A.dim() == 2 && B.dim() == 2, "A and B must be 2D");
+  TORCH_CHECK(A.scalar_type() == at::kFloat && B.scalar_type() == at::kFloat,
+              "Expect float32 tensors");
+
+  int M = (int)A.size(0);
+  int K = (int)A.size(1);
+  int N = (int)B.size(1);
+  TORCH_CHECK((int)B.size(0) == K, "B.size(0) must equal A.size(1)");
+
+  auto A_c = A.contiguous();
+  auto B_c = B.contiguous();
+  auto C   = torch::empty({M, N}, A.options());
+
+  dim3 block(16, 16);
+  dim3 grid((N + 15) / 16, (M + 15) / 16);
+
+  cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
+  cute_gemm_kernel<<<grid, block, 0, stream>>>(
+      A_c.data_ptr<float>(), B_c.data_ptr<float>(), C.data_ptr<float>(), M, N, K);
+
+  TORCH_CHECK(cudaGetLastError() == cudaSuccess, "CUTE gemm launch failed");
+  return C;
+}
+"""
+
+cute_ext = load_inline(
+    name="cute_gemm_minimal_ext",
+    cpp_sources=cpp_decl,
+    cuda_sources=cuda_src,
+    functions=["cute_gemm"],
+    extra_cflags=["-O3"],
+    extra_cuda_cflags=["-O3"],
+    verbose=False,
+)
+
+class ModelNew(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self._ext = cute_ext
+
+    def forward(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+        return self._ext.cute_gemm(A, B)
+```
+
+Here's the architecture you need to optimize:
+```
+<REF>
+```
+Implement the architecture named Model with custom CUTE operators! Name your output architecture ModelNew, and make sure that it uses CUTE/CUDA kernels that you wrote for all of the underlying computation in forward(). Make sure that the written CUTE is correct and complete, and that it implements the requested functions. Output the new code in CODEBLOCKS (wrap in ``` and ```). Please generate real code, NOT pseudocode, make sure the code compiles and is fully functional. Just output the new model code, no other text, and NO testing code! This is very important! Generate ONLY ONE kernel for the entire torch module, not one kernel per operator. CUTLASS/CuTe headers are already on the compiler include path; do not add gencode flags.

@@ -60,6 +60,7 @@ TOKEN_CSV_BY_PATH: dict[str, list[str]] = {
         "sonnet5_token_usage_cute_to_ptx_from_start.csv.from_120",
     ],
     "ptx/level1-no-profile": ["kimi_token_usage_ptx_nopf_new8.csv"],
+    "ptx/level1-no-profile-gpt5": ["openai_gpt5_ptx_nopf_token_usage.csv"],
     "ptx/level1-no-profile-sonnet5": ["sonnet5_token_usage_ptx_nopf.csv"],
     "ptx/level1-profiled": [
         "kimi_token_usage_ptx_remote.csv",
@@ -89,6 +90,7 @@ TOKEN_CSV_BY_PATH: dict[str, list[str]] = {
         "sonnet5_token_usage_triton_from_start.csv",
         "sonnet5_token_usage_triton_from_start_new8.csv",
     ],
+    "triton/level1-profiled-gpt5": ["openai_gpt5_triton_delayed.csv"],
 }
 
 
@@ -111,6 +113,8 @@ def _row_matches_model(row: dict, model: str | None) -> bool:
     mname = (row.get("model") or "").lower()
     if model == "Sonnet 5":
         return "anthropic" in server or "sonnet" in mname or "claude" in mname
+    if model == "GPT-5":
+        return "openai" in server or "gpt" in mname
     if model == "Kimi K3":
         return "kimi" in server or "kimi" in mname or "moonshot" in mname
     return True

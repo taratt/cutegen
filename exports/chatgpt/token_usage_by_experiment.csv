@@ -1,0 +1,30 @@
+experiment_col,input_tokens,output_tokens,total_tokens,api_calls,sources
+CUDA/delay/K,7107678,6511644,13619322,954,kimi_token_usage_cuda_delayed_120.csv; kimi_token_usage_cuda_delayed_new8.csv
+CUDA/delay/S,4023239,2158245,6181484,452,sonnet5_cuda_prof_token_usage.csv; sonnet5_token_usage_cuda_profiled_new8.csv
+CUDA/nopf/K,2527620,2448283,4975903,394,kimi_token_usage_cuda_nopf.csv; kimi_token_usage_cuda_nopf_new8.csv
+CUDA/nopf/S,3414993,2188507,5603500,386,sonnet5_token_usage_cuda_nopf.csv
+CUDA/start/K,13341,25719,39060,3,kimi_token_usage_cuda_from_start.csv.from_10106
+CUDA/start/S,3167756,2089012,5256768,363,sonnet5_token_usage_cuda_from_start.csv; sonnet5_token_usage_cuda_from_start_new8.csv
+CuTe/delay/K,7303543,7368584,14672127,937,kimi_token_usage.csv; kimi_token_usage_cute_delayed_new8.csv
+CuTe/delay/S,4064116,2719481,6783597,363,sonnet5_token_usage.csv; sonnet5_token_usage_cute_profiled_new8.csv; sonnet5_token_usage_cute_delayed.csv
+CuTe/min/S,411331,318207,729538,44,sonnet5_token_usage_cute_nopf_minimal.csv
+CuTe/minstart/S,4680608,2657898,7338506,399,sonnet5_token_usage_cute_profiled_from_start_minimal.csv
+CuTe/nopf/S,4282146,2822765,7104911,396,sonnet5_token_usage_cute_nopf.csv
+CuTe/start/K,1121049,959302,2080351,127,kimi_token_usage_cute_from_start_new8.csv
+CuTe/start/S,4005311,2715944,6721255,353,sonnet5_from_start_token_usage.csv; sonnet5_token_usage_cute_from_start_new8.csv
+CuTe→PTX/nopf/S,7634078,3552021,11186099,578,sonnet5_token_usage_cute_to_ptx.csv
+CuTe→PTX/start/S,9938746,5227843,15166589,757,sonnet5_token_usage_cute_to_ptx_from_start.csv.from_120
+PTX/delay/K,9003672,9094219,18097891,1051,kimi_token_usage_ptx_remote.csv; kimi_token_usage_ptx_delayed.csv; kimi_token_usage_ptx_delayed_new8.csv
+PTX/delay/S,1306863,1922104,3228967,115,sonnet5_token_usage_ptx_delayed.csv; sonnet5_token_usage_ptx_profiled_new8.csv
+PTX/nopf/G,1527045,1490128,3017173,239,openai_gpt5_ptx_nopf_token_usage.csv
+PTX/nopf/K,852531,1030919,1883450,100,kimi_token_usage_ptx_nopf_new8.csv
+PTX/nopf/S,3273116,4889982,8163098,312,sonnet5_token_usage_ptx_nopf.csv
+PTX/start/K,2343364,2761355,5104719,249,kimi_token_usage_ptx_from_start.csv
+PTX/start/S,3576893,4943162,8520055,333,sonnet5_token_usage_ptx_from_start.csv
+Triton/delay/G,158989,141810,300799,34,openai_gpt5_triton_delayed.csv
+Triton/delay/K,1734141,1934461,3668602,334,kimi_token_usage_triton_delayed_sample19.csv; kimi_token_usage_triton_delayed_new8.csv
+Triton/delay/S,1086187,610611,1696798,130,sonnet5_token_usage_triton_delayed.csv
+Triton/nopf/K,611802,589795,1201597,114,kimi_token_usage_triton_nopf_new8.csv
+Triton/nopf/S,3734451,2301431,6035882,462,sonnet5_token_usage_triton_nopf_guide_v2.csv; sonnet5_token_usage_triton_nopf.csv
+Triton/start/K,16837,13043,29880,4,kimi_token_usage_triton_from_start.csv.from_10707
+Triton/start/S,3905629,2220801,6126430,443,sonnet5_token_usage_triton_from_start.csv; sonnet5_token_usage_triton_from_start_new8.csv

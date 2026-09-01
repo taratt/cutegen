@@ -58,6 +58,22 @@ function kernelAtDepth(pts: (number | null)[] | undefined, maxDepth: number) {
   return { best, correct, fast1, nDepths: speeds.length };
 }
 
+function isPrecisionCheat(col: string, kernelId: number): boolean {
+  return PRECISION_CHEATS.some((c) => c.col === col && c.kernel === kernelId);
+}
+
+function kernelAtDepthFiltered(
+  pts: (number | null)[] | undefined,
+  maxDepth: number,
+  col: string,
+  kernelId: number,
+  excludePrecisionCheats: boolean,
+) {
+  const base = kernelAtDepth(pts, maxDepth);
+  if (!excludePrecisionCheats || !isPrecisionCheat(col, kernelId)) return base;
+  return { best: null, correct: false, fast1: false, nDepths: base.nDepths };
+}
+
 function bestSpeedupInRange(pts: (number | null)[] | undefined, maxDepth: number): number | null {
   return kernelAtDepth(pts, maxDepth).best;
 }
@@ -213,14 +229,18 @@ function filterIdsByCategory(ids: number[], category: string): number[] {
 
 function setupShortLabel(e: ExpMeta): string {
   const methodShort =
-    e.method === "No profiling"
+    e.method === "Minimal"
+      ? "min"
+      : e.method === "Minimal from start"
+        ? "minstart"
+        : e.method === "No profiling"
       ? "nopf"
       : e.method === "Delayed profiling"
         ? "delay"
         : e.method === "Profiling from start"
           ? "start"
           : e.method;
-  const modelShort = e.model === "Sonnet 5" ? "Sonnet" : e.model === "Kimi K3" ? "Kimi" : e.model;
+  const modelShort = e.model === "Sonnet 5" ? "Sonnet" : e.model === "Kimi K3" ? "Kimi" : e.model === "GPT-5" ? "GPT-5" : e.model;
   return `${e.backend} · ${methodShort} · ${modelShort}`;
 }
 
@@ -866,18 +886,25 @@ function cohortLabel(cohort: Cohort): string {
   return "all-27";
 }
 
-function summarizeExp(exp: ExpMeta, cohort: Cohort, typeFilter: string, maxDepth: number): ExpMeta & CohortStats {
+function summarizeExp(
+  exp: ExpMeta,
+  cohort: Cohort,
+  typeFilter: string,
+  maxDepth: number,
+  excludePrecisionCheats: boolean,
+): ExpMeta & CohortStats {
   const ids = cohortIds(cohort);
   const typeIds =
     typeFilter === "all" ? ids : ids.filter((id) => KERNELS.find((k) => k.id === id)?.ktype === typeFilter);
   const target_n = typeIds.length;
   const curves = CURVES[exp.col] ?? {};
   const pool = typeIds.filter((id) => curves[String(id)] != null);
-  const stats = pool.map((id) => kernelAtDepth(curves[String(id)], maxDepth));
+  const stats = pool.map((id) => kernelAtDepthFiltered(curves[String(id)], maxDepth, exp.col, id, excludePrecisionCheats));
   const correct_n = stats.filter((s) => s.correct).length;
   const fast1_n = stats.filter((s) => s.fast1).length;
   const speeds = stats.filter((s) => s.correct && s.best != null).map((s) => s.best as number);
   const gains = pool
+    .filter((id) => !excludePrecisionCheats || !isPrecisionCheat(exp.col, id))
     .map((id) => maxOverInitialRatio(curves[String(id)], maxDepth))
     .filter((g): g is number => g != null);
   const mean = speeds.length ? speeds.reduce((a, b) => a + b, 0) / speeds.length : null;
@@ -902,7 +929,7 @@ function summarizeExp(exp: ExpMeta, cohort: Cohort, typeFilter: string, maxDepth
   };
 }
 
-function buildMatrix(cohort: Cohort, typeFilter: string, maxDepth: number, cols: string[]) {
+function buildMatrix(cohort: Cohort, typeFilter: string, maxDepth: number, cols: string[], excludePrecisionCheats: boolean) {
   const ids = cohortIds(cohort);
   const filteredIds =
     typeFilter === "all" ? ids : ids.filter((id) => KERNELS.find((k) => k.id === id)?.ktype === typeFilter);
@@ -915,11 +942,14 @@ function buildMatrix(cohort: Cohort, typeFilter: string, maxDepth: number, cols:
     };
     for (const col of cols) {
       const pts = CURVES[col]?.[String(id)];
-      const st = kernelAtDepth(pts, maxDepth);
+      const st = kernelAtDepthFiltered(pts, maxDepth, col, id, excludePrecisionCheats);
       row[col] = st.best;
-      row[`${col}_gain`] = maxOverInitialRatio(pts, maxDepth);
+      row[`${col}_gain`] = excludePrecisionCheats && isPrecisionCheat(col, id)
+        ? null
+        : maxOverInitialRatio(pts, maxDepth);
       row[`${col}_correct`] = st.correct;
       row[`${col}_fast1`] = st.fast1;
+      row[`${col}_cheat`] = isPrecisionCheat(col, id);
     }
     const gainVals = cols
       .map((col) => row[`${col}_gain`])
@@ -949,8 +979,12 @@ export default function ExperimentKernelSpeedups() {
   const [typeFilter, setTypeFilter] = useCanvasState("typeFilter", "all");
   const [sortKey, setSortKey] = useCanvasState<SortKey>("sortKey", "fast1");
   const [maxDepth, setMaxDepth] = useCanvasState<number>("maxDepth", ABS_MAX_DEPTH);
+  const [excludePrecisionCheats, setExcludePrecisionCheats] = useCanvasState<boolean>(
+    "excludePrecisionCheats",
+    false,
+  );
 
-  const typedExps = EXPS.map((e) => summarizeExp(e, cohort, typeFilter, maxDepth));
+  const typedExps = EXPS.map((e) => summarizeExp(e, cohort, typeFilter, maxDepth, excludePrecisionCheats));
 
   const filteredExps = typedExps
     .filter((e) => {
@@ -981,7 +1015,7 @@ export default function ExperimentKernelSpeedups() {
 
   const cols = filteredExps.map((e) => e.col);
   const targetN = cohortIds(cohort).length;
-  const matrix = buildMatrix(cohort, typeFilter, maxDepth, EXPS.map((e) => e.col));
+  const matrix = buildMatrix(cohort, typeFilter, maxDepth, EXPS.map((e) => e.col), excludePrecisionCheats);
 
   const summaryRows = filteredExps.map((e) => [
     e.backend,
@@ -1032,13 +1066,29 @@ export default function ExperimentKernelSpeedups() {
           Speedup = ref / best correct gen time at depths 0–{maxDepth}. Correct = ≥1 passing instance in range.
           Fast1 = correct and speedup &gt; 1. Fractions use cohort size (19, 8, or 27). Token counts from
           TOKEN_USAGE CSVs (input / output / total), filtered to the selected cohort kernels. Updated {GENERATED}.
+          {excludePrecisionCheats
+            ? " I/O precision cheats excluded: k33 Triton/nopf/S, k49 CuTe/nopf/S counted as incorrect (no speedup in aggregates)."
+            : ""}
         </Text>
       </Stack>
+
+      {excludePrecisionCheats ? (
+        <Callout tone="warning" title="I/O precision cheats excluded">
+          <Stack gap={4}>
+            {PRECISION_CHEATS.map((c) => (
+              <Text key={`${c.col}-${c.kernel}`} size="sm">
+                <Code>k{c.kernel}</Code> · <Code>{c.col}</Code> — {c.note}
+              </Text>
+            ))}
+          </Stack>
+        </Callout>
+      ) : null}
 
       <Callout tone="info" title="Profiling modes">
         <Text size="sm">
           <Code>level1-profiled</Code> and <Code>level1-profiled-sonnet5</Code> = delayed profiling.
           <Code>level1-profiled-from-start-*</Code> and <Code>level1_from_start</Code> = profiling from start.
+          <Code>*-minimal*</Code> = minimal-prompt ablation (nopf or from-start).
         </Text>
       </Callout>
 
@@ -1065,6 +1115,7 @@ export default function ExperimentKernelSpeedups() {
             { value: "all", label: "Model: All" },
             { value: "Kimi K3", label: "Model: Kimi K3" },
             { value: "Sonnet 5", label: "Model: Sonnet 5" },
+            { value: "GPT-5", label: "Model: GPT-5" },
           ]}
         />
         <Select
@@ -1086,6 +1137,8 @@ export default function ExperimentKernelSpeedups() {
             { value: "No profiling", label: "Method: No profiling" },
             { value: "Delayed profiling", label: "Method: Delayed profiling" },
             { value: "Profiling from start", label: "Method: Profiling from start" },
+            { value: "Minimal", label: "Method: Minimal" },
+            { value: "Minimal from start", label: "Method: Minimal from start" },
           ]}
         />
         <Select
@@ -1106,6 +1159,10 @@ export default function ExperimentKernelSpeedups() {
             { value: "best", label: "Sort: Best speedup" },
           ]}
         />
+        <Row gap={8} style={{ alignItems: "center" }}>
+          <Toggle checked={excludePrecisionCheats} onChange={setExcludePrecisionCheats} />
+          <Text size="sm">Exclude I/O precision cheats (k33, k49)</Text>
+        </Row>
       </Row>
 
       <Grid columns={4} gap={12}>
@@ -1211,6 +1268,7 @@ def scoreboard_header(payload: dict) -> str:
   Stat,
   Table,
   Text,
+  Toggle,
   useCanvasState,
 }} from "cursor/canvas";
 '''
@@ -1245,6 +1303,8 @@ const EXPS = {js(payload["exps"])};
 const KERNELS = {js(payload["kernels"])};
 const CURVES: Record<string, Record<string, (number | null)[]>> = {js(payload["curves"])};
 const TOKENS: Record<string, TokenAgg> = {js(payload.get("tokens") or {})};
+type PrecisionCheat = {{ col: string; kernel: number; path: string; note: string }};
+const PRECISION_CHEATS: PrecisionCheat[] = {js(payload.get("precisionCheats") or [])};
 {SHARED_HELPERS}
 '''
 
@@ -1263,6 +1323,8 @@ const EXPS = {js(payload["exps"])};
 const KERNELS = {js(payload["kernels"])};
 const CURVES: Record<string, Record<string, (number | null)[]>> = {js(payload["curves"])};
 const TOKENS: Record<string, TokenAgg> = {js(payload.get("tokens") or {})};
+type PrecisionCheat = {{ col: string; kernel: number; path: string; note: string }};
+const PRECISION_CHEATS: PrecisionCheat[] = {js(payload.get("precisionCheats") or [])};
 '''
         + SHARED_HELPERS
     )

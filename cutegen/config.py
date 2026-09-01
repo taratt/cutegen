@@ -52,7 +52,7 @@ DEBUG_PRINT = True # whether to print debug messages
 
 LOAD_MODEL_BACKOFF_TIME = 1.0 # time to wait before retrying a failed operation
 RUN_MODEL_BACKOFF_TIME = 2.0 # time to wait before retrying a failed operation
-GPU_REQ_SPACE = 0.85 # 1/4 GPU space reserved.
+GPU_REQ_SPACE = float(os.environ.get("GPU_REQ_SPACE", "0"))  # 0 = disabled (eval subprocess holds VRAM)
 CPU_REQ_SPACE = 70.0 # 70% CPU space reserved.
 
 COMPILE_LOG_CHARS = 10000 # maximum number of characters to pass into an llm to fix a compile error
@@ -74,6 +74,9 @@ MAX_CONCURRENT_PROBLEMS = 1 # maximum number of problems to run concurrently on 
 MAX_DEPTH = 10 # maximum depth of the search
 MAX_RETRIES_PER_DEPTH = 0
 
+MAX_TRANSIENT_RETRIES = int(os.environ.get("MAX_TRANSIENT_RETRIES", 3))
+TRANSIENT_RETRY_BACKOFF_SECONDS = float(os.environ.get("TRANSIENT_RETRY_BACKOFF_SECONDS", 30))
+
 FEEDBACK_MODE = "iterative"
 USE_PROFILING = os.environ.get("USE_PROFILING", "true").lower() in {
     "1", "true", "yes", "on"
@@ -89,26 +92,35 @@ EVAL_COLD_CACHE = False # whether to evaluate the cold cache
 from cutegen.llm_api import LLMConfig
 
 # code generation model selection
+# LLM_CONFIG_CODEGEN = [
+#     # LLMConfig(server_type="openai", model_name="o4-mini-2025-04-16", temperature=0.5, is_reasoning_model=True, max_completion_tokens=100000),
+#     #LLMConfig(server_type="openai", model_name="o3-2025-04-16", temperature=0.5, is_reasoning_model=True, max_completion_tokens=100000),
+#     # LLMConfig(server_type="percepta", model_name="Qwen/Qwen3-32B", temperature=0.0, max_tokens=100000)
+#     # LLMConfig(server_type="google", model_name="gemini-2.5-pro", temperature=0.5, max_tokens=100000),
+#     # LLMConfig(server_type="openai", model_name="gpt-5", temperature=0.5, is_reasoning_model=True, max_completion_tokens=100000)
+#     LLMConfig(
+#         server_type="kimi",
+#         model_name="kimi-k3",
+#         is_reasoning_model=True,
+#         reasoning_effort="high",
+#         max_completion_tokens=32000,
+#     ),
+#     # LLMConfig(
+#     #     server_type="anthropic",
+#     #     model_name="claude-sonnet-5",
+#     #     is_reasoning_model=True,
+#     #     reasoning_effort="high",
+#     #     # Anthropic max_tokens is a hard cap on thinking + response text.
+#     #     max_tokens=32000,
+#     #     max_completion_tokens=32000,
+#     # )
+# ]
 LLM_CONFIG_CODEGEN = [
-    # LLMConfig(server_type="openai", model_name="o4-mini-2025-04-16", temperature=0.5, is_reasoning_model=True, max_completion_tokens=100000),
-    #LLMConfig(server_type="openai", model_name="o3-2025-04-16", temperature=0.5, is_reasoning_model=True, max_completion_tokens=100000),
-    # LLMConfig(server_type="percepta", model_name="Qwen/Qwen3-32B", temperature=0.0, max_tokens=100000)
-    # LLMConfig(server_type="google", model_name="gemini-2.5-pro", temperature=0.5, max_tokens=100000),
-    # LLMConfig(server_type="openai", model_name="gpt-5", temperature=0.5, is_reasoning_model=True, max_completion_tokens=100000)
-    # LLMConfig(
-    #     server_type="kimi",
-    #     model_name="kimi-k3",
-    #     is_reasoning_model=True,
-    #     reasoning_effort="high",
-    #     max_completion_tokens=32000,
-    # ),
     LLMConfig(
-        server_type="anthropic",
-        model_name="claude-sonnet-5",
+        server_type="openai",
+        model_name="gpt-5",
+        temperature=0.5,
         is_reasoning_model=True,
-        reasoning_effort="high",
-        # Anthropic max_tokens is a hard cap on thinking + response text.
-        max_tokens=32000,
-        max_completion_tokens=32000,
-    )
+        max_completion_tokens=100000,
+    ),
 ]

@@ -51,6 +51,20 @@ KERNEL_TYPE = {
 
 KERNEL_NAMES: dict[int, str] = {}
 
+# Verified I/O precision cheats: fp32 reference but generated kernel uses lower precision.
+PRECISION_IO_CHEATS = [
+    {
+        "path": "cute/level1-no-profile-sonnet5",
+        "kernel": 49,
+        "note": "AT_DISPATCH kHalf/kBFloat16 on fp32 Max reduction ref",
+    },
+    {
+        "path": "triton/level1-no-profile-sonnet5",
+        "kernel": 33,
+        "note": "fp16 compute path on fp32 BatchNorm ref",
+    },
+]
+
 
 def parse_time(v):
     if v is None:
@@ -77,6 +91,11 @@ def kid(name: str) -> int | None:
 
 
 def experiment_method(leaf: str) -> str:
+    leaf_l = leaf.lower()
+    if "minimal" in leaf_l:
+        if "from-start" in leaf_l or "from_start" in leaf_l:
+            return "Minimal from start"
+        return "Minimal"
     if "no-profile" in leaf or "nopf" in leaf:
         return "No profiling"
     if "from-start" in leaf or "from_start" in leaf or leaf == "level1_from_start":
@@ -92,19 +111,14 @@ def experiment_method(leaf: str) -> str:
 
 
 def experiment_model(rel: str, leaf: str, backend: str) -> str:
-    # Convention: only dirs with "sonnet" in the name are Sonnet 5;
-    # everything else (incl. plain level1-no-profile / level1-profiled) is Kimi K3.
+    # Convention: sonnet → Sonnet 5, gpt5 → GPT-5, else Kimi K3.
     del backend  # unused; kept for call-site compatibility
     s = f"{rel}/{leaf}".lower()
+    if "gpt5" in s or "gpt-5" in s:
+        return "GPT-5"
     if "sonnet" in s:
         return "Sonnet 5"
     return "Kimi K3"
-
-
-def is_excluded_experiment(exp: Path) -> bool:
-    """Skip ablations we don't want on the main canvases."""
-    leaf = exp.name.lower()
-    return "minimal" in leaf
 
 
 def label_experiment(exp: Path) -> dict:
@@ -122,7 +136,11 @@ def label_experiment(exp: Path) -> dict:
         "ptx": "PTX",
         "triton": "Triton",
     }.get(backend, backend.upper())
-    if method == "No profiling":
+    if method == "Minimal":
+        tag = "min"
+    elif method == "Minimal from start":
+        tag = "minstart"
+    elif method == "No profiling":
         tag = "nopf"
     elif method == "Delayed profiling":
         tag = "delay"
@@ -130,7 +148,8 @@ def label_experiment(exp: Path) -> dict:
         tag = "start"
     else:
         tag = leaf.replace("level1-", "")
-    col = f"{backend_label}/{tag}/{'S' if model == 'Sonnet 5' else 'K'}"
+    model_tag = {"Sonnet 5": "S", "GPT-5": "G"}.get(model, "K")
+    col = f"{backend_label}/{tag}/{model_tag}"
     label = f"{backend_label} · {method} · {model}"
     return {
         "col": col,
@@ -181,7 +200,7 @@ def main() -> None:
         {bt.parent.parent for bt in ROOT.rglob("best_time.txt") if re.match(r"^\d+_", bt.parent.name)},
         key=str,
     ):
-        if exp.name == "kimi-k3" or is_excluded_experiment(exp):
+        if exp.name == "kimi-k3":
             continue
         meta = label_experiment(exp)
         col = meta["col"]
@@ -217,6 +236,21 @@ def main() -> None:
 
     tokens = build_tokens_by_col(exps)
 
+    path_to_col = {e["path"]: e["col"] for e in exps}
+    precision_cheats = []
+    for cheat in PRECISION_IO_CHEATS:
+        col = path_to_col.get(cheat["path"])
+        if not col:
+            continue
+        precision_cheats.append(
+            {
+                "col": col,
+                "kernel": cheat["kernel"],
+                "path": cheat["path"],
+                "note": cheat["note"],
+            }
+        )
+
     payload = {
         "generated": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "maxDepth": MAX_DEPTH,
@@ -228,6 +262,7 @@ def main() -> None:
         "curves": curves,
         "kernels": kernel_meta,
         "tokens": tokens,
+        "precisionCheats": precision_cheats,
     }
     out = Path("/tmp/cutegen_canvas_payload.json")
     out.write_text(json.dumps(payload, indent=2))

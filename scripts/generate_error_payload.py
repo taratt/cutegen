@@ -56,6 +56,11 @@ def kid(name: str) -> int | None:
 
 
 def experiment_method(leaf: str) -> str:
+    leaf_l = leaf.lower()
+    if "minimal" in leaf_l:
+        if "from-start" in leaf_l or "from_start" in leaf_l:
+            return "Minimal from start"
+        return "Minimal"
     if "no-profile" in leaf or "nopf" in leaf:
         return "No profiling"
     if "from-start" in leaf or "from_start" in leaf or leaf == "level1_from_start":
@@ -79,12 +84,6 @@ def experiment_model(rel: str, leaf: str, backend: str) -> str:
     return "Kimi K3"
 
 
-def is_excluded_experiment(exp: Path) -> bool:
-    """Skip ablations we don't want on the main canvases."""
-    leaf = exp.name.lower()
-    return "minimal" in leaf
-
-
 def label_experiment(exp: Path) -> dict:
     rel = exp.relative_to(ROOT)
     parts = list(rel.parts)
@@ -100,7 +99,11 @@ def label_experiment(exp: Path) -> dict:
         "ptx": "PTX",
         "triton": "Triton",
     }.get(backend, backend.upper())
-    if method == "No profiling":
+    if method == "Minimal":
+        tag = "min"
+    elif method == "Minimal from start":
+        tag = "minstart"
+    elif method == "No profiling":
         tag = "nopf"
     elif method == "Delayed profiling":
         tag = "delay"
@@ -279,7 +282,7 @@ def main() -> None:
         key=str,
     )
     for exp in exp_dirs:
-        if exp.name == "kimi-k3" or is_excluded_experiment(exp):
+        if exp.name == "kimi-k3":
             continue
         meta = label_experiment(exp)
         col = meta["col"]
