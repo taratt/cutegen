@@ -15,6 +15,7 @@ CuTe→PTX/nopf/S,CuTe→PTX · No profiling · Sonnet 5,CuTe→PTX,No profiling
 CuTe→PTX/start/S,CuTe→PTX · Profiling from start · Sonnet 5,CuTe→PTX,Profiling from start,Sonnet 5,189,0,0,104,0
 PTX/delay/K,PTX · Delayed profiling · Kimi K3,PTX,Delayed profiling,Kimi K3,195,0,0,83,0
 PTX/delay/S,PTX · Delayed profiling · Sonnet 5,PTX,Delayed profiling,Sonnet 5,204,0,0,17,0
+PTX/nopf/G,PTX · No profiling · GPT-5,PTX,No profiling,GPT-5,37,0,0,61,0
 PTX/nopf/K,PTX · No profiling · Kimi K3,PTX,No profiling,Kimi K3,193,0,0,50,0
 PTX/nopf/S,PTX · No profiling · Sonnet 5,PTX,No profiling,Sonnet 5,194,0,0,25,0
 PTX/start/K,PTX · Profiling from start · Kimi K3,PTX,Profiling from start,Kimi K3,265,0,0,65,0

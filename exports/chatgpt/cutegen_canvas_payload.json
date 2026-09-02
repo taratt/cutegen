@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-02T13:09:41Z",
+  "generated": "2026-09-02T13:14:20Z",
   "maxDepth": 10,
   "depthLabels": [
     "0",
@@ -245,6 +245,15 @@
       "method": "No profiling",
       "model": "Kimi K3",
       "leaf": "level1-no-profile"
+    },
+    {
+      "col": "PTX/nopf/G",
+      "path": "ptx/level1-no-profile-gpt5",
+      "label": "PTX \u00b7 No profiling \u00b7 GPT-5",
+      "backend": "PTX",
+      "method": "No profiling",
+      "model": "GPT-5",
+      "leaf": "level1-no-profile-gpt5"
     },
     {
       "col": "PTX/nopf/S",
@@ -5508,6 +5517,333 @@
         0.1662,
         0.1141,
         0.6894,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    "PTX/nopf/G": {
+      "75": [
+        1.5434,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "14": [
+        0.4573,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "1": [
+        0.1089,
+        0.1089,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "70": [
+        0.1314,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "21": [
+        0.9791,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "103": [
+        0.1611,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "58": [
+        0.3626,
+        0.3402,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "88": [
+        8.7396,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "107": [
+        0.6648,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "22": [
+        0.9957,
+        0.8587,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "55": [
+        0.0248,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "4": [
+        0.9956,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "105": [
+        0.6063,
+        1.3215,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "53": [
+        0.8603,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "61": [
+        0.1728,
+        0.2229,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "33": [
+        0.3719,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "54": [
+        0.0957,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "9": [
+        0.3262,
+        0.3386,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "59": [
+        0.1489,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "49": [
+        0.4279,
+        0.4279,
+        0.3599,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "50": [
+        0.172,
+        0.171,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "99": [
+        0.046,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "83": [
+        1.3984,
+        1.3871,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "80": [
+        0.0283,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "6": [
+        0.0736,
+        null,
+        null,
+        null,
         null,
         null,
         null,
@@ -12101,6 +12437,179 @@
       },
       "sources": [
         "kimi_token_usage_ptx_nopf_new8.csv"
+      ]
+    },
+    "PTX/nopf/G": {
+      "input": 1527045,
+      "output": 1490128,
+      "total": 3017173,
+      "calls": 239,
+      "byKernel": {
+        "1": {
+          "input": 168165,
+          "output": 146236,
+          "total": 314401,
+          "calls": 31
+        },
+        "4": {
+          "input": 16248,
+          "output": 20213,
+          "total": 36461,
+          "calls": 4
+        },
+        "6": {
+          "input": 39782,
+          "output": 49055,
+          "total": 88837,
+          "calls": 6
+        },
+        "9": {
+          "input": 24120,
+          "output": 23800,
+          "total": 47920,
+          "calls": 5
+        },
+        "14": {
+          "input": 6303,
+          "output": 16450,
+          "total": 22753,
+          "calls": 2
+        },
+        "21": {
+          "input": 22304,
+          "output": 20237,
+          "total": 42541,
+          "calls": 6
+        },
+        "22": {
+          "input": 12655,
+          "output": 19010,
+          "total": 31665,
+          "calls": 3
+        },
+        "33": {
+          "input": 38227,
+          "output": 44511,
+          "total": 82738,
+          "calls": 6
+        },
+        "40": {
+          "input": 163506,
+          "output": 169945,
+          "total": 333451,
+          "calls": 23
+        },
+        "49": {
+          "input": 142378,
+          "output": 120445,
+          "total": 262823,
+          "calls": 22
+        },
+        "50": {
+          "input": 14649,
+          "output": 32579,
+          "total": 47228,
+          "calls": 3
+        },
+        "53": {
+          "input": 7436,
+          "output": 17746,
+          "total": 25182,
+          "calls": 2
+        },
+        "54": {
+          "input": 9439,
+          "output": 23369,
+          "total": 32808,
+          "calls": 2
+        },
+        "55": {
+          "input": 10039,
+          "output": 24615,
+          "total": 34654,
+          "calls": 2
+        },
+        "58": {
+          "input": 115592,
+          "output": 66497,
+          "total": 182089,
+          "calls": 11
+        },
+        "59": {
+          "input": 37037,
+          "output": 55062,
+          "total": 92099,
+          "calls": 4
+        },
+        "61": {
+          "input": 47569,
+          "output": 49762,
+          "total": 97331,
+          "calls": 7
+        },
+        "70": {
+          "input": 30873,
+          "output": 33334,
+          "total": 64207,
+          "calls": 4
+        },
+        "75": {
+          "input": 33124,
+          "output": 33887,
+          "total": 67011,
+          "calls": 4
+        },
+        "80": {
+          "input": 9506,
+          "output": 23026,
+          "total": 32532,
+          "calls": 2
+        },
+        "83": {
+          "input": 33941,
+          "output": 38378,
+          "total": 72319,
+          "calls": 5
+        },
+        "88": {
+          "input": 14672,
+          "output": 15049,
+          "total": 29721,
+          "calls": 4
+        },
+        "99": {
+          "input": 33692,
+          "output": 40008,
+          "total": 73700,
+          "calls": 6
+        },
+        "102": {
+          "input": 231427,
+          "output": 191569,
+          "total": 422996,
+          "calls": 31
+        },
+        "103": {
+          "input": 8333,
+          "output": 21434,
+          "total": 29767,
+          "calls": 2
+        },
+        "105": {
+          "input": 171344,
+          "output": 114493,
+          "total": 285837,
+          "calls": 27
+        },
+        "107": {
+          "input": 84684,
+          "output": 79418,
+          "total": 164102,
+          "calls": 15
+        }
+      },
+      "sources": [
+        "openai_gpt5_ptx_nopf_token_usage.csv"
       ]
     },
     "PTX/nopf/S": {

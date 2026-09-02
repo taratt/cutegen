@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-02T13:09:41Z",
+  "generated": "2026-09-02T13:14:20Z",
   "sample19Ids": [
     1,
     4,
@@ -231,6 +231,15 @@
       "method": "No profiling",
       "model": "Kimi K3",
       "leaf": "level1-no-profile"
+    },
+    {
+      "col": "PTX/nopf/G",
+      "path": "ptx/level1-no-profile-gpt5",
+      "label": "PTX \u00b7 No profiling \u00b7 GPT-5",
+      "backend": "PTX",
+      "method": "No profiling",
+      "model": "GPT-5",
+      "leaf": "level1-no-profile-gpt5"
     },
     {
       "col": "PTX/nopf/S",
@@ -6500,6 +6509,413 @@
         "ever_passed": true
       }
     },
+    "PTX/nopf/G": {
+      "102": {
+        "nodes": 1,
+        "nodes_pass": 0,
+        "nodes_fail": 1,
+        "compile_errors": 17,
+        "correct_errors": 0,
+        "compile_resolved": 0,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 0,
+        "unresolved": 19,
+        "max_depth": 0,
+        "ever_passed": false
+      },
+      "103": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 0,
+        "correct_errors": 0,
+        "compile_resolved": 0,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 0,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "105": {
+        "nodes": 2,
+        "nodes_pass": 2,
+        "nodes_fail": 0,
+        "compile_errors": 13,
+        "correct_errors": 0,
+        "compile_resolved": 13,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 13,
+        "unresolved": 0,
+        "max_depth": 1,
+        "ever_passed": true
+      },
+      "107": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 1,
+        "correct_errors": 0,
+        "compile_resolved": 1,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 1,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "14": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 0,
+        "correct_errors": 0,
+        "compile_resolved": 0,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 0,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "1": {
+        "nodes": 2,
+        "nodes_pass": 2,
+        "nodes_fail": 0,
+        "compile_errors": 7,
+        "correct_errors": 9,
+        "compile_resolved": 7,
+        "correct_resolved": 9,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 16,
+        "unresolved": 0,
+        "max_depth": 1,
+        "ever_passed": true
+      },
+      "21": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 2,
+        "correct_errors": 0,
+        "compile_resolved": 2,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 2,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "22": {
+        "nodes": 2,
+        "nodes_pass": 2,
+        "nodes_fail": 0,
+        "compile_errors": 0,
+        "correct_errors": 0,
+        "compile_resolved": 0,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 0,
+        "unresolved": 0,
+        "max_depth": 1,
+        "ever_passed": true
+      },
+      "33": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 2,
+        "correct_errors": 0,
+        "compile_resolved": 2,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 2,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "40": {
+        "nodes": 1,
+        "nodes_pass": 0,
+        "nodes_fail": 1,
+        "compile_errors": 4,
+        "correct_errors": 9,
+        "compile_resolved": 0,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 0,
+        "unresolved": 15,
+        "max_depth": 0,
+        "ever_passed": false
+      },
+      "49": {
+        "nodes": 3,
+        "nodes_pass": 3,
+        "nodes_fail": 0,
+        "compile_errors": 7,
+        "correct_errors": 3,
+        "compile_resolved": 7,
+        "correct_resolved": 3,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 10,
+        "unresolved": 0,
+        "max_depth": 2,
+        "ever_passed": true
+      },
+      "4": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 1,
+        "correct_errors": 0,
+        "compile_resolved": 1,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 1,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "50": {
+        "nodes": 2,
+        "nodes_pass": 2,
+        "nodes_fail": 0,
+        "compile_errors": 0,
+        "correct_errors": 0,
+        "compile_resolved": 0,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 0,
+        "unresolved": 0,
+        "max_depth": 1,
+        "ever_passed": true
+      },
+      "53": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 0,
+        "correct_errors": 0,
+        "compile_resolved": 0,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 0,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "54": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 0,
+        "correct_errors": 0,
+        "compile_resolved": 0,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 0,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "55": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 0,
+        "correct_errors": 0,
+        "compile_resolved": 0,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 0,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "58": {
+        "nodes": 2,
+        "nodes_pass": 2,
+        "nodes_fail": 0,
+        "compile_errors": 4,
+        "correct_errors": 0,
+        "compile_resolved": 4,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 4,
+        "unresolved": 0,
+        "max_depth": 1,
+        "ever_passed": true
+      },
+      "59": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 1,
+        "correct_errors": 0,
+        "compile_resolved": 1,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 1,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "61": {
+        "nodes": 2,
+        "nodes_pass": 2,
+        "nodes_fail": 0,
+        "compile_errors": 2,
+        "correct_errors": 0,
+        "compile_resolved": 2,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 2,
+        "unresolved": 0,
+        "max_depth": 1,
+        "ever_passed": true
+      },
+      "6": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 2,
+        "correct_errors": 0,
+        "compile_resolved": 2,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 2,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "70": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 1,
+        "correct_errors": 0,
+        "compile_resolved": 1,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 1,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "75": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 1,
+        "correct_errors": 0,
+        "compile_resolved": 1,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 1,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "80": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 0,
+        "correct_errors": 0,
+        "compile_resolved": 0,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 0,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "83": {
+        "nodes": 2,
+        "nodes_pass": 2,
+        "nodes_fail": 0,
+        "compile_errors": 1,
+        "correct_errors": 0,
+        "compile_resolved": 1,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 1,
+        "unresolved": 0,
+        "max_depth": 1,
+        "ever_passed": true
+      },
+      "88": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 1,
+        "correct_errors": 0,
+        "compile_resolved": 1,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 1,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "99": {
+        "nodes": 1,
+        "nodes_pass": 1,
+        "nodes_fail": 0,
+        "compile_errors": 2,
+        "correct_errors": 0,
+        "compile_resolved": 2,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 2,
+        "unresolved": 0,
+        "max_depth": 0,
+        "ever_passed": true
+      },
+      "9": {
+        "nodes": 2,
+        "nodes_pass": 2,
+        "nodes_fail": 0,
+        "compile_errors": 1,
+        "correct_errors": 0,
+        "compile_resolved": 1,
+        "correct_resolved": 0,
+        "codegen_regens": 0,
+        "timeouts": 0,
+        "resolved": 1,
+        "unresolved": 0,
+        "max_depth": 1,
+        "ever_passed": true
+      }
+    },
     "PTX/nopf/S": {
       "102": {
         "nodes": 10,
@@ -12018,6 +12434,21 @@
       "max_depth": 10,
       "ever_passed": true
     },
+    "PTX/nopf/G": {
+      "nodes": 37,
+      "nodes_pass": 35,
+      "nodes_fail": 2,
+      "compile_errors": 70,
+      "correct_errors": 21,
+      "compile_resolved": 49,
+      "correct_resolved": 12,
+      "codegen_regens": 0,
+      "timeouts": 0,
+      "resolved": 61,
+      "unresolved": 34,
+      "max_depth": 2,
+      "ever_passed": true
+    },
     "PTX/nopf/S": {
       "nodes": 194,
       "nodes_pass": 194,
@@ -14070,6 +14501,179 @@
       },
       "sources": [
         "kimi_token_usage_ptx_nopf_new8.csv"
+      ]
+    },
+    "PTX/nopf/G": {
+      "input": 1527045,
+      "output": 1490128,
+      "total": 3017173,
+      "calls": 239,
+      "byKernel": {
+        "1": {
+          "input": 168165,
+          "output": 146236,
+          "total": 314401,
+          "calls": 31
+        },
+        "4": {
+          "input": 16248,
+          "output": 20213,
+          "total": 36461,
+          "calls": 4
+        },
+        "6": {
+          "input": 39782,
+          "output": 49055,
+          "total": 88837,
+          "calls": 6
+        },
+        "9": {
+          "input": 24120,
+          "output": 23800,
+          "total": 47920,
+          "calls": 5
+        },
+        "14": {
+          "input": 6303,
+          "output": 16450,
+          "total": 22753,
+          "calls": 2
+        },
+        "21": {
+          "input": 22304,
+          "output": 20237,
+          "total": 42541,
+          "calls": 6
+        },
+        "22": {
+          "input": 12655,
+          "output": 19010,
+          "total": 31665,
+          "calls": 3
+        },
+        "33": {
+          "input": 38227,
+          "output": 44511,
+          "total": 82738,
+          "calls": 6
+        },
+        "40": {
+          "input": 163506,
+          "output": 169945,
+          "total": 333451,
+          "calls": 23
+        },
+        "49": {
+          "input": 142378,
+          "output": 120445,
+          "total": 262823,
+          "calls": 22
+        },
+        "50": {
+          "input": 14649,
+          "output": 32579,
+          "total": 47228,
+          "calls": 3
+        },
+        "53": {
+          "input": 7436,
+          "output": 17746,
+          "total": 25182,
+          "calls": 2
+        },
+        "54": {
+          "input": 9439,
+          "output": 23369,
+          "total": 32808,
+          "calls": 2
+        },
+        "55": {
+          "input": 10039,
+          "output": 24615,
+          "total": 34654,
+          "calls": 2
+        },
+        "58": {
+          "input": 115592,
+          "output": 66497,
+          "total": 182089,
+          "calls": 11
+        },
+        "59": {
+          "input": 37037,
+          "output": 55062,
+          "total": 92099,
+          "calls": 4
+        },
+        "61": {
+          "input": 47569,
+          "output": 49762,
+          "total": 97331,
+          "calls": 7
+        },
+        "70": {
+          "input": 30873,
+          "output": 33334,
+          "total": 64207,
+          "calls": 4
+        },
+        "75": {
+          "input": 33124,
+          "output": 33887,
+          "total": 67011,
+          "calls": 4
+        },
+        "80": {
+          "input": 9506,
+          "output": 23026,
+          "total": 32532,
+          "calls": 2
+        },
+        "83": {
+          "input": 33941,
+          "output": 38378,
+          "total": 72319,
+          "calls": 5
+        },
+        "88": {
+          "input": 14672,
+          "output": 15049,
+          "total": 29721,
+          "calls": 4
+        },
+        "99": {
+          "input": 33692,
+          "output": 40008,
+          "total": 73700,
+          "calls": 6
+        },
+        "102": {
+          "input": 231427,
+          "output": 191569,
+          "total": 422996,
+          "calls": 31
+        },
+        "103": {
+          "input": 8333,
+          "output": 21434,
+          "total": 29767,
+          "calls": 2
+        },
+        "105": {
+          "input": 171344,
+          "output": 114493,
+          "total": 285837,
+          "calls": 27
+        },
+        "107": {
+          "input": 84684,
+          "output": 79418,
+          "total": 164102,
+          "calls": 15
+        }
+      },
+      "sources": [
+        "openai_gpt5_ptx_nopf_token_usage.csv"
       ]
     },
     "PTX/nopf/S": {

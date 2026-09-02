@@ -14,6 +14,7 @@ CuTe→PTX/nopf/S,7634078,3552021,11186099,578,sonnet5_token_usage_cute_to_ptx.c
 CuTe→PTX/start/S,9938746,5227843,15166589,757,sonnet5_token_usage_cute_to_ptx_from_start.csv.from_120
 PTX/delay/K,9003672,9094219,18097891,1051,kimi_token_usage_ptx_remote.csv; kimi_token_usage_ptx_delayed.csv; kimi_token_usage_ptx_delayed_new8.csv
 PTX/delay/S,1306863,1922104,3228967,115,sonnet5_token_usage_ptx_delayed.csv; sonnet5_token_usage_ptx_profiled_new8.csv
+PTX/nopf/G,1527045,1490128,3017173,239,openai_gpt5_ptx_nopf_token_usage.csv
 PTX/nopf/K,852531,1030919,1883450,100,kimi_token_usage_ptx_nopf_new8.csv
 PTX/nopf/S,3273116,4889982,8163098,312,sonnet5_token_usage_ptx_nopf.csv
 PTX/start/K,2343364,2761355,5104719,249,kimi_token_usage_ptx_from_start.csv

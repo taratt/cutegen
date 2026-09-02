@@ -62,7 +62,6 @@ def paths_superseded_by_minimal(available_paths: set[str]) -> set[str]:
 # Active fleet runs — omit from canvas payloads until finished.
 IN_PROGRESS_PATHS = frozenset(
     {
-        "ptx/level1-no-profile-gpt5",  # 10707: abandoned GPT-5 nopf partial
         "ptx/level1-profiled-from-start-gpt5",  # 10707: PTX GPT-5 from-start (still running)
     }
 )
