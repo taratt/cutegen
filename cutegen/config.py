@@ -115,12 +115,23 @@ from cutegen.llm_api import LLMConfig
 #     #     max_completion_tokens=32000,
 #     # )
 # ]
+_OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5")
+_OPENAI_REASONING_MODELS = {
+    "gpt-5",
+    "gpt-5.6-sol",
+    "gpt-5.6-luna",
+    "o3",
+    "o3-mini",
+    "o4-mini",
+}
 LLM_CONFIG_CODEGEN = [
     LLMConfig(
         server_type="openai",
-        model_name="gpt-5",
+        model_name=_OPENAI_MODEL,
         temperature=0.5,
-        is_reasoning_model=True,
-        max_completion_tokens=100000,
+        is_reasoning_model=_OPENAI_MODEL in _OPENAI_REASONING_MODELS
+        or _OPENAI_MODEL.startswith(("gpt-5", "o3", "o4")),
+        reasoning_effort=os.environ.get("OPENAI_REASONING_EFFORT", "high"),
+        max_completion_tokens=int(os.environ.get("OPENAI_MAX_COMPLETION_TOKENS", "100000")),
     ),
 ]

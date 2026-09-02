@@ -13,6 +13,10 @@ import anthropic
 TOGETHER_KEY = os.environ.get("TOGETHER_API_KEY")
 DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
+OPENAI_RUSTCAT_USER_AGENT = os.environ.get(
+    "OPENAI_RUSTCAT_USER_AGENT", "curl/8.5.0"
+)
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 SGLANG_KEY = os.environ.get("SGLANG_API_KEY")  # for Local Deployment
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -56,6 +60,15 @@ def _anthropic_text_outputs(response) -> list[str]:
         if hasattr(block, "text") and getattr(block, "type", None) != "thinking"
     ]
 
+
+def _make_openai_client(api_key: str, base_url: str | None = None) -> OpenAI:
+    """Create an OpenAI SDK client, with rust.cat Cloudflare workaround when needed."""
+    kwargs: dict = {"api_key": api_key, "max_retries": 3}
+    if base_url:
+        kwargs["base_url"] = base_url.rstrip("/")
+        # rust.cat blocks the default OpenAI SDK User-Agent.
+        kwargs["default_headers"] = {"User-Agent": OPENAI_RUSTCAT_USER_AGENT}
+    return OpenAI(**kwargs)
 
 def _anthropic_create_message(client, **request_kwargs):
     """
@@ -249,7 +262,7 @@ def query_server(
             client = OpenAI(api_key=SAMBANOVA_API_KEY, base_url="https://api.sambanova.ai/v1")
             model = model_name
         case "openai":
-            client = OpenAI(api_key=OPENAI_KEY)
+            client = _make_openai_client(OPENAI_KEY, OPENAI_BASE_URL)
             model = model_name
         case "kimi":
             if not MOONSHOT_API_KEY:
