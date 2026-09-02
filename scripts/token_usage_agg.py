@@ -55,6 +55,9 @@ TOKEN_CSV_BY_PATH: dict[str, list[str]] = {
     "cute/level1-profiled-from-start-sonnet5-minimal": [
         "sonnet5_token_usage_cute_profiled_from_start_minimal.csv",
     ],
+    "cute/level1-profiled-sonnet5-minimal": [
+        "sonnet5_token_usage_cute_profiled_minimal.csv.from_120",
+    ],
     "cute-ptx/level1-nopf-sonnet5": ["sonnet5_token_usage_cute_to_ptx.csv"],
     "cute-ptx/level1-profiled-from-start-sonnet5": [
         "sonnet5_token_usage_cute_to_ptx_from_start.csv.from_120",
@@ -72,8 +75,14 @@ TOKEN_CSV_BY_PATH: dict[str, list[str]] = {
         "sonnet5_token_usage_ptx_profiled_new8.csv",
     ],
     "ptx/level1-profiled-from-start": ["kimi_token_usage_ptx_from_start.csv"],
+    "ptx/level1-profiled-from-start-gpt5": [
+        "openai_gpt5_ptx_from_start_token_usage.csv.from_10707",
+    ],
     "ptx/level1-profiled-from-start-sonnet5": ["sonnet5_token_usage_ptx_from_start.csv"],
     "triton/level1-no-profile": ["kimi_token_usage_triton_nopf_new8.csv"],
+    "triton/level1-no-profile-gpt5": [
+        "openai_gpt5_token_usage.csv.from_10106",
+    ],
     "triton/level1-no-profile-sonnet5": [
         "sonnet5_token_usage_triton_nopf_guide_v2.csv",
         "sonnet5_token_usage_triton_nopf.csv",

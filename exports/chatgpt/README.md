@@ -6,9 +6,9 @@ Upload these files to ChatGPT. Start with `cutegen_canvas_payload.json` for full
 
 - `cutegen_canvas_payload.json` — full structured data (speedups, tokens, metadata)
 - `cutegen_error_payload.json` — full error/debug data per experiment
-- `speedup_curves.csv` — flattened speedups (772 rows: experiment × kernel)
-- `token_usage_by_experiment.csv` — LLM tokens per experiment (29 rows)
-- `error_summary_by_experiment.csv` — error counts per experiment (30 rows)
+- `speedup_curves.csv` — flattened speedups (743 rows: experiment × kernel)
+- `token_usage_by_experiment.csv` — LLM tokens per experiment (27 rows)
+- `error_summary_by_experiment.csv` — error counts per experiment (28 rows)
 - `precision_io_cheats.json` — 2 known I/O precision cheats to exclude
 - `README.md` — this guide
 

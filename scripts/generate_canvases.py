@@ -138,6 +138,17 @@ function emptyTokens(): TokenBucket {
   return { input: 0, output: 0, total: 0, calls: 0 };
 }
 
+function backendsForModel(model: string): string[] {
+  const pool = model === "all" ? EXPS : EXPS.filter((e) => e.model === model);
+  return [...new Set(pool.map((e) => e.backend))].sort();
+}
+
+/** Avoid empty grids when persisted backend filter does not match the selected model (e.g. GPT-5 + CuTe). */
+function safeBackendFilter(model: string, backend: string): string {
+  if (backend === "all") return backend;
+  return backendsForModel(model).includes(backend) ? backend : "all";
+}
+
 function fmtTokens(n: number | null | undefined): string {
   if (n == null || typeof n !== "number" || !Number.isFinite(n)) return "—";
   const v = Math.round(n);
@@ -192,13 +203,14 @@ type TokenAgg = TokenBucket & {
 '''
 
 SPEEDUP_DEPTH_BODY = '''
-type Cohort = "sample19" | "new8" | "all";
+type Cohort = "sample19" | "new8" | "all" | "cohort25";
 type ViewMode = "setup" | "kernel" | "grid" | "backend-grid";
 
 function cohortIds(cohort: Cohort): number[] {
   if (cohort === "sample19") return SAMPLE19_IDS;
   if (cohort === "new8") return NEW8_IDS;
-  return [...SAMPLE19_IDS, ...NEW8_IDS];
+  if (cohort === "cohort25") return COHORT25_IDS;
+  return ALL27_IDS;
 }
 
 function kernelMeta(id: number): KernelMeta | undefined {
@@ -272,6 +284,7 @@ export default function SpeedupVsDepthCanvas() {
   const [modelFilter, setModelFilter] = useCanvasState<string>("modelFilter", "all");
   const [categoryFilter, setCategoryFilter] = useCanvasState<string>("categoryFilter", "all");
 
+  const effectiveBackendFilter = safeBackendFilter(modelFilter, backendFilter);
   const cohortPool = cohortIds(cohort);
   const categories = uniqueSorted([
     ...KERNEL_TYPES,
@@ -283,7 +296,7 @@ export default function SpeedupVsDepthCanvas() {
   const methods = uniqueSorted(EXPS.map((e) => e.method));
   const models = uniqueSorted(EXPS.map((e) => e.model));
 
-  const filteredExps = filterSetups(EXPS, backendFilter, methodFilter, modelFilter);
+  const filteredExps = filterSetups(EXPS, effectiveBackendFilter, methodFilter, modelFilter);
   const exp = EXPS.find((e) => e.col === expCol) ?? EXPS[0];
   const expCurves = CURVES[exp?.col ?? ""] ?? {};
   const cats = depthLabels(maxDepth);
@@ -355,7 +368,7 @@ export default function SpeedupVsDepthCanvas() {
 
   const backendGridExps = filterSetups(
     EXPS,
-    backendFilter === "all" ? "CuTe" : backendFilter,
+    effectiveBackendFilter === "all" ? "CuTe" : effectiveBackendFilter,
     methodFilter,
     modelFilter,
   ).filter((e) => hasAnyDataInRange(CURVES[e.col]?.[String(activeKernelId)], maxDepth));
@@ -440,7 +453,7 @@ export default function SpeedupVsDepthCanvas() {
 
   const scopeLabel = [
     categoryFilter === "all" ? null : categoryFilter,
-    backendFilter === "all" ? "all backends" : backendFilter,
+    effectiveBackendFilter === "all" ? "all backends" : effectiveBackendFilter,
     methodFilter === "all" ? null : methodFilter,
     modelFilter === "all" ? null : modelFilter,
   ]
@@ -485,6 +498,7 @@ export default function SpeedupVsDepthCanvas() {
           options={[
             { value: "sample19", label: "Sample 19" },
             { value: "new8", label: "New 8" },
+            { value: "cohort25", label: "Cohort 25 (excl. 55, 59)" },
             { value: "all", label: "All 27" },
           ]}
         />
@@ -516,7 +530,7 @@ export default function SpeedupVsDepthCanvas() {
             />
             <Select
               label="Backend"
-              value={backendFilter}
+              value={effectiveBackendFilter}
               onChange={setBackendFilter}
               options={[
                 { value: "all", label: "All backends" },
@@ -672,7 +686,7 @@ export default function SpeedupVsDepthCanvas() {
       {view === "backend-grid" && backendGridExps.length > 0 && (
         <Stack gap={8}>
           <H2>
-            {kernelLabel(activeKernelId)} — {scopeLabel || (backendFilter === "all" ? "CuTe" : backendFilter)} setups
+            {kernelLabel(activeKernelId)} — {scopeLabel || (effectiveBackendFilter === "all" ? "CuTe" : effectiveBackendFilter)} setups
           </H2>
           <Grid columns={2} gap={12}>
             {backendGridExps.map((e) => {
@@ -855,6 +869,7 @@ type CohortStats = {
   fast1_n: number;
   fast1_pct: number;
   mean_speedup: number | null;
+  geomean_speedup: number | null;
   median_speedup: number | null;
   best_speedup: number | null;
   mean_gain: number | null;
@@ -872,17 +887,26 @@ function fmtPct(v: number): string {
   return v.toFixed(1) + "%";
 }
 
-type Cohort = "sample19" | "new8" | "all";
+function geometricMean(values: number[]): number | null {
+  const pos = values.filter((v) => v > 0 && Number.isFinite(v));
+  if (!pos.length) return null;
+  const logSum = pos.reduce((a, v) => a + Math.log(v), 0);
+  return Math.exp(logSum / pos.length);
+}
+
+type Cohort = "sample19" | "new8" | "all" | "cohort25";
 
 function cohortIds(cohort: Cohort): number[] {
   if (cohort === "sample19") return SAMPLE19_IDS;
   if (cohort === "new8") return NEW8_IDS;
-  return [...SAMPLE19_IDS, ...NEW8_IDS];
+  if (cohort === "cohort25") return COHORT25_IDS;
+  return ALL27_IDS;
 }
 
 function cohortLabel(cohort: Cohort): string {
   if (cohort === "sample19") return "sample-19";
   if (cohort === "new8") return "new-8";
+  if (cohort === "cohort25") return "cohort-25";
   return "all-27";
 }
 
@@ -908,6 +932,7 @@ function summarizeExp(
     .map((id) => maxOverInitialRatio(curves[String(id)], maxDepth))
     .filter((g): g is number => g != null);
   const mean = speeds.length ? speeds.reduce((a, b) => a + b, 0) / speeds.length : null;
+  const geomean = geometricMean(speeds);
   const sorted = speeds.slice().sort((a, b) => a - b);
   const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
   const tok = tokensForIds(exp.col, typeIds);
@@ -920,6 +945,7 @@ function summarizeExp(
     fast1_n,
     fast1_pct: target_n ? (100 * fast1_n) / target_n : 0,
     mean_speedup: mean,
+    geomean_speedup: geomean,
     median_speedup: median,
     best_speedup: speeds.length ? Math.max(...speeds) : null,
     mean_gain: gains.length ? gains.reduce((a, b) => a + b, 0) / gains.length : null,
@@ -969,7 +995,7 @@ function cellGain(row: Record<string, unknown>, col: string): string {
   return fmtGain(typeof v === "number" ? v : null);
 }
 
-type SortKey = "backend" | "method" | "model" | "correct" | "fast1" | "mean" | "median" | "best";
+type SortKey = "backend" | "method" | "model" | "correct" | "fast1" | "mean" | "geom" | "median" | "best";
 
 export default function ExperimentKernelSpeedups() {
   const [cohort, setCohort] = useCanvasState<Cohort>("cohort", "sample19");
@@ -984,15 +1010,17 @@ export default function ExperimentKernelSpeedups() {
     false,
   );
 
+  const effectiveBackendFilter = safeBackendFilter(modelFilter, backendFilter);
+
   const typedExps = EXPS.map((e) => summarizeExp(e, cohort, typeFilter, maxDepth, excludePrecisionCheats));
 
   const filteredExps = typedExps
     .filter((e) => {
       if (modelFilter !== "all" && e.model !== modelFilter) return false;
-      if (backendFilter !== "all" && e.backend !== backendFilter) return false;
+      if (effectiveBackendFilter !== "all" && e.backend !== effectiveBackendFilter) return false;
       if (methodFilter !== "all" && e.method !== methodFilter) return false;
-      // Hide setups with no nodes yet for the active cohort (new-8 / all partial runs).
-      if ((cohort === "new8" || cohort === "all") && e.attempted_n === 0) return false;
+      // Hide setups with no nodes yet for multi-kernel cohorts (partial runs).
+      if ((cohort === "new8" || cohort === "cohort25" || cohort === "all") && e.attempted_n === 0) return false;
       return true;
     })
     .slice()
@@ -1004,6 +1032,7 @@ export default function ExperimentKernelSpeedups() {
         if (sortKey === "correct") return e.correct_pct;
         if (sortKey === "fast1") return e.fast1_pct;
         if (sortKey === "mean") return e.mean_speedup ?? -1;
+        if (sortKey === "geom") return e.geomean_speedup ?? -1;
         if (sortKey === "median") return e.median_speedup ?? -1;
         return e.best_speedup ?? -1;
       };
@@ -1026,6 +1055,7 @@ export default function ExperimentKernelSpeedups() {
     `${e.fast1_n}/${e.target_n}`,
     fmtPct(e.fast1_pct),
     fmtSp(e.mean_speedup),
+    fmtSp(e.geomean_speedup),
     fmtSp(e.median_speedup),
     fmtSp(e.best_speedup),
     fmtGain(e.mean_gain),
@@ -1064,7 +1094,7 @@ export default function ExperimentKernelSpeedups() {
         <H1>Cutegen experiment scoreboard</H1>
         <Text tone="secondary">
           Speedup = ref / best correct gen time at depths 0–{maxDepth}. Correct = ≥1 passing instance in range.
-          Fast1 = correct and speedup &gt; 1. Fractions use cohort size (19, 8, or 27). Token counts from
+          Fast1 = correct and speedup &gt; 1. Fractions use cohort size (19, 8, 25, or 27). Token counts from
           TOKEN_USAGE CSVs (input / output / total), filtered to the selected cohort kernels. Updated {GENERATED}.
           {excludePrecisionCheats
             ? " I/O precision cheats excluded: k33 Triton/nopf/S, k49 CuTe/nopf/S counted as incorrect (no speedup in aggregates)."
@@ -1105,6 +1135,7 @@ export default function ExperimentKernelSpeedups() {
           options={[
             { value: "sample19", label: "Cohort: Sample 19 kernels" },
             { value: "new8", label: "Cohort: New 8 kernels" },
+            { value: "cohort25", label: "Cohort: 25 kernels (excl. 55, 59)" },
             { value: "all", label: "Cohort: All 27 kernels" },
           ]}
         />
@@ -1119,7 +1150,7 @@ export default function ExperimentKernelSpeedups() {
           ]}
         />
         <Select
-          value={backendFilter}
+          value={effectiveBackendFilter}
           onChange={setBackendFilter}
           options={[
             { value: "all", label: "Backend: All" },
@@ -1156,6 +1187,8 @@ export default function ExperimentKernelSpeedups() {
             { value: "fast1", label: "Sort: Fast1 %" },
             { value: "correct", label: "Sort: Correct %" },
             { value: "mean", label: "Sort: Mean speedup" },
+            { value: "geom", label: "Sort: Geom mean speedup" },
+            { value: "median", label: "Sort: Median speedup" },
             { value: "best", label: "Sort: Best speedup" },
           ]}
         />
@@ -1196,7 +1229,7 @@ export default function ExperimentKernelSpeedups() {
       <Stack gap={8}>
         <H2>Experiment summary (depths 0–{maxDepth})</H2>
         <Table
-          headers={["Backend", "Method", "Model", "Path", "Correct", "Correct %", "Fast1", "Fast1 %", "Mean", "Median", "Best", "Mean max/init", "In tok", "Out tok", "Total tok"]}
+          headers={["Backend", "Method", "Model", "Path", "Correct", "Correct %", "Fast1", "Fast1 %", "Mean", "Geom", "Median", "Best", "Mean max/init", "In tok", "Out tok", "Total tok"]}
           rows={filteredExps.map((e) => [
             e.backend,
             e.method,
@@ -1207,6 +1240,7 @@ export default function ExperimentKernelSpeedups() {
             `${e.fast1_n}/${e.target_n}`,
             fmtPct(e.fast1_pct),
             fmtSp(e.mean_speedup),
+            fmtSp(e.geomean_speedup),
             fmtSp(e.median_speedup),
             fmtSp(e.best_speedup),
             fmtGain(e.mean_gain),
@@ -1215,7 +1249,7 @@ export default function ExperimentKernelSpeedups() {
             fmtTokens(e.tok_total),
           ])}
           rowTone={summaryTone}
-          columnAlign={["left", "left", "left", "left", "right", "right", "right", "right", "right", "right", "right", "right", "right", "right", "right"]}
+          columnAlign={["left", "left", "left", "left", "right", "right", "right", "right", "right", "right", "right", "right", "right", "right", "right", "right"]}
           striped
           stickyHeader
         />
@@ -1273,6 +1307,15 @@ def scoreboard_header(payload: dict) -> str:
 }} from "cursor/canvas";
 '''
 
+def _cohort_id_lines(payload: dict) -> str:
+    all27 = payload.get("all27Ids") or sorted(set(payload["sample19Ids"] + payload["new8Ids"]))
+    cohort25 = payload.get("cohort25Ids") or [k for k in all27 if k not in (55, 59)]
+    return f"""const SAMPLE19_IDS = {js(payload["sample19Ids"])};
+const NEW8_IDS = {js(payload["new8Ids"])};
+const ALL27_IDS = {js(all27)};
+const COHORT25_IDS = {js(cohort25)};"""
+
+
 def speedup_header(payload: dict, extra_types: str) -> str:
     return f'''import {{
   Callout,
@@ -1296,8 +1339,7 @@ def speedup_header(payload: dict, extra_types: str) -> str:
 const GENERATED = {json.dumps(payload["generated"])};
 const DEPTH_LABELS: string[] = {js(payload["depthLabels"])};
 const MAX_DEPTH = {payload["maxDepth"]};
-const SAMPLE19_IDS = {js(payload["sample19Ids"])};
-const NEW8_IDS = {js(payload["new8Ids"])};
+{_cohort_id_lines(payload)}
 const KERNEL_TYPES: string[] = {js(payload["kernelTypes"])};
 const EXPS = {js(payload["exps"])};
 const KERNELS = {js(payload["kernels"])};
@@ -1316,8 +1358,7 @@ def data_header(payload: dict) -> str:
 const GENERATED = {json.dumps(payload["generated"])};
 const DEPTH_LABELS: string[] = {js(payload["depthLabels"])};
 const MAX_DEPTH = {payload["maxDepth"]};
-const SAMPLE19_IDS = {js(payload["sample19Ids"])};
-const NEW8_IDS = {js(payload["new8Ids"])};
+{_cohort_id_lines(payload)}
 const KERNEL_TYPES: string[] = {js(payload["kernelTypes"])};
 const EXPS = {js(payload["exps"])};
 const KERNELS = {js(payload["kernels"])};
@@ -1328,6 +1369,33 @@ const PRECISION_CHEATS: PrecisionCheat[] = {js(payload.get("precisionCheats") or
 '''
         + SHARED_HELPERS
     )
+
+
+def sanitize_canvas_data_json(payload: dict) -> None:
+    """Fix persisted UI filters that would show an empty canvas (e.g. GPT-5 + CuTe)."""
+    filter_keys = ("modelFilter", "backendFilter", "methodFilter", "cohort", "typeFilter")
+    for data_file in CANVAS_DIR.glob("*.canvas.data.json"):
+        try:
+            state = json.loads(data_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if "exps" not in state and "modelFilter" not in state:
+            continue
+        exps = payload.get("exps") or state.get("exps") or []
+        model = state.get("modelFilter", "all")
+        backend = state.get("backendFilter", "all")
+        changed = False
+        if model != "all" and backend != "all":
+            allowed = sorted({e["backend"] for e in exps if e.get("model") == model})
+            if backend not in allowed:
+                state["backendFilter"] = "all"
+                changed = True
+        if changed:
+            # Preserve only UI state keys; drop stale embedded payload blobs.
+            cleaned = {k: state[k] for k in filter_keys if k in state}
+            cleaned.update({k: state[k] for k in ("sortKey", "maxDepth", "excludePrecisionCheats", "view", "cohort") if k in state})
+            data_file.write_text(json.dumps(cleaned, indent=2) + "\n")
+            print(f"sanitized {data_file.name}")
 
 
 def main() -> None:
@@ -1345,6 +1413,7 @@ def main() -> None:
     CANVAS_DIR.mkdir(parents=True, exist_ok=True)
     (CANVAS_DIR / "speedup-vs-depth.canvas.tsx").write_text(speedup_tsx)
     (CANVAS_DIR / "model-experiment-speedups.canvas.tsx").write_text(scoreboard_tsx)
+    sanitize_canvas_data_json(payload)
     print(f"wrote {CANVAS_DIR / 'speedup-vs-depth.canvas.tsx'} ({len(speedup_tsx)} chars)")
     print(f"wrote {CANVAS_DIR / 'model-experiment-speedups.canvas.tsx'} ({len(scoreboard_tsx)} chars)")
 

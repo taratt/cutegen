@@ -10,12 +10,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from experiment_selection import (
+    ALL27,
+    COHORT25,
+    NEW8,
+    SAMPLE19,
+    experiment_method,
+    experiment_model,
+    model_tag as model_tag_for,
+    paths_in_progress,
+    paths_superseded_by_minimal,
+)
 from token_usage_agg import build_tokens_by_col
 
 ROOT = Path(__file__).resolve().parents[1] / "saved_nodes"
-SAMPLE19 = [1, 4, 9, 21, 22, 33, 40, 49, 53, 54, 55, 58, 59, 80, 83, 88, 99, 102, 103]
-NEW8 = [6, 14, 50, 61, 70, 75, 105, 107]
-ALL_KERNELS = sorted(set(SAMPLE19 + NEW8))
+ALL_KERNELS = ALL27
 
 KERNEL_TYPE = {
     1: "matmul",
@@ -55,35 +64,6 @@ def kid(name: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def experiment_method(leaf: str) -> str:
-    leaf_l = leaf.lower()
-    if "minimal" in leaf_l:
-        if "from-start" in leaf_l or "from_start" in leaf_l:
-            return "Minimal from start"
-        return "Minimal"
-    if "no-profile" in leaf or "nopf" in leaf:
-        return "No profiling"
-    if "from-start" in leaf or "from_start" in leaf or leaf == "level1_from_start":
-        return "Profiling from start"
-    if leaf == "level1-profiled" or (
-        leaf.startswith("level1-profiled-") and "from-start" not in leaf
-    ):
-        return "Delayed profiling"
-    if "profiled" in leaf:
-        return "Delayed profiling"
-    return leaf
-
-
-def experiment_model(rel: str, leaf: str, backend: str) -> str:
-    # Convention: only dirs with "sonnet" in the name are Sonnet 5;
-    # everything else (incl. plain level1-no-profile / level1-profiled) is Kimi K3.
-    del backend  # unused; kept for call-site compatibility
-    s = f"{rel}/{leaf}".lower()
-    if "sonnet" in s:
-        return "Sonnet 5"
-    return "Kimi K3"
-
-
 def label_experiment(exp: Path) -> dict:
     rel = exp.relative_to(ROOT)
     parts = list(rel.parts)
@@ -111,7 +91,7 @@ def label_experiment(exp: Path) -> dict:
         tag = "start"
     else:
         tag = leaf.replace("level1-", "")
-    col = f"{backend_label}/{tag}/{'S' if model == 'Sonnet 5' else 'K'}"
+    col = f"{backend_label}/{tag}/{model_tag_for(model)}"
     label = f"{backend_label} · {method} · {model}"
     return {
         "col": col,
@@ -268,9 +248,7 @@ def sum_exp_stats(rows: dict[str, dict]) -> dict:
 
 
 def main() -> None:
-    exps: list[dict] = []
-    errors: dict[str, dict[str, dict]] = {}
-    exp_totals: dict[str, dict] = {}
+    collected: list[tuple[dict, dict[str, dict], dict]] = []
     seen_cols: set[str] = set()
 
     exp_dirs = sorted(
@@ -312,9 +290,20 @@ def main() -> None:
         if not exp_rows:
             continue
 
+        collected.append((meta, exp_rows, sum_exp_stats(exp_rows)))
+
+    available_paths = {meta["path"] for meta, _, _ in collected}
+    exclude_paths = paths_superseded_by_minimal(available_paths) | set(paths_in_progress())
+
+    exps: list[dict] = []
+    errors: dict[str, dict[str, dict]] = {}
+    exp_totals: dict[str, dict] = {}
+    for meta, exp_rows, totals in collected:
+        if meta["path"] in exclude_paths:
+            continue
         exps.append({k: meta[k] for k in ("col", "path", "label", "backend", "method", "model", "leaf")})
-        errors[col] = exp_rows
-        exp_totals[col] = sum_exp_stats(exp_rows)
+        errors[meta["col"]] = exp_rows
+        exp_totals[meta["col"]] = totals
 
     kernel_meta = []
     for k in ALL_KERNELS:
@@ -333,6 +322,8 @@ def main() -> None:
         "generated": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "sample19Ids": SAMPLE19,
         "new8Ids": NEW8,
+        "all27Ids": ALL27,
+        "cohort25Ids": COHORT25,
         "kernelTypes": sorted(set(KERNEL_TYPE.values())),
         "exps": exps,
         "kernels": kernel_meta,
@@ -343,6 +334,11 @@ def main() -> None:
     out = Path("/tmp/cutegen_error_payload.json")
     out.write_text(json.dumps(payload, indent=2))
     print(f"wrote {out} ({out.stat().st_size} bytes)")
+    skipped = sorted(paths_in_progress() & available_paths)
+    if skipped:
+        print(f"excluded in-progress ({len(skipped)}):")
+        for p in skipped:
+            print(f"  - {p}")
     for e in exps:
         t = exp_totals[e["col"]]
         total_err = t["compile_errors"] + t["correct_errors"]

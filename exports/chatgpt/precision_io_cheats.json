@@ -1,11 +1,5 @@
 [
   {
-    "col": "CuTe/nopf/S",
-    "kernel": 49,
-    "path": "cute/level1-no-profile-sonnet5",
-    "note": "AT_DISPATCH kHalf/kBFloat16 on fp32 Max reduction ref"
-  },
-  {
     "col": "Triton/nopf/S",
     "kernel": 33,
     "path": "triton/level1-no-profile-sonnet5",

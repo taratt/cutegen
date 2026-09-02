@@ -40,13 +40,14 @@ ERROR_REPORT_BODY = '''
 type KernelMeta = { id: number; name: string; ktype: string; cohort: string };
 type ExpMeta = { col: string; path: string; label: string; backend: string; method: string; model: string; leaf: string };
 
-type Cohort = "sample19" | "new8" | "all";
+type Cohort = "sample19" | "new8" | "all" | "cohort25";
 type ViewMode = "summary" | "kernels" | "compare";
 
 function cohortIds(cohort: Cohort): number[] {
   if (cohort === "sample19") return SAMPLE19_IDS;
   if (cohort === "new8") return NEW8_IDS;
-  return [...SAMPLE19_IDS, ...NEW8_IDS];
+  if (cohort === "cohort25") return COHORT25_IDS;
+  return ALL27_IDS;
 }
 
 function kernelMeta(id: number): KernelMeta | undefined {
@@ -195,7 +196,7 @@ function filterExps(
     if (backend !== "all" && e.backend !== backend) return false;
     if (method !== "all" && e.method !== method) return false;
     if (model !== "all" && e.model !== model) return false;
-    if (cohort === "new8") {
+    if (cohort === "new8" || cohort === "cohort25") {
       const rows = ERRORS[e.col] ?? {};
       const has = Object.keys(rows).some((k) => ids.has(Number(k)));
       if (!has) return false;
@@ -361,6 +362,7 @@ export default function ErrorReport() {
           options={[
             { value: "sample19", label: "Cohort: Sample 19" },
             { value: "new8", label: "Cohort: New 8" },
+            { value: "cohort25", label: "Cohort: 25 (excl. 55, 59)" },
             { value: "all", label: "Cohort: All 27" },
           ]}
         />
@@ -552,6 +554,8 @@ type TokenAgg = TokenBucket & {{
 const GENERATED = {json.dumps(payload["generated"])};
 const SAMPLE19_IDS = {js(payload["sample19Ids"])};
 const NEW8_IDS = {js(payload["new8Ids"])};
+const ALL27_IDS = {js(payload.get("all27Ids") or sorted(set(payload["sample19Ids"] + payload["new8Ids"])))};
+const COHORT25_IDS = {js(payload.get("cohort25Ids") or [k for k in (payload.get("all27Ids") or sorted(set(payload["sample19Ids"] + payload["new8Ids"]))) if k not in (55, 59)])};
 const KERNEL_TYPES: string[] = {js(payload["kernelTypes"])};
 const EXPS = {js(payload["exps"])};
 const KERNELS = {js(payload["kernels"])};

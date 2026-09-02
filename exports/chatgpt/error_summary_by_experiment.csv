@@ -6,25 +6,23 @@ CUDA/nopf/S,CUDA · No profiling · Sonnet 5,CUDA,No profiling,Sonnet 5,297,0,0,
 CUDA/start/K,CUDA · Profiling from start · Kimi K3,CUDA,Profiling from start,Kimi K3,256,0,0,28,0
 CUDA/start/S,CUDA · Profiling from start · Sonnet 5,CUDA,Profiling from start,Sonnet 5,297,0,0,33,0
 CuTe/delay/K,CuTe · Delayed profiling · Kimi K3,CuTe,Delayed profiling,Kimi K3,263,0,0,36,0
-CuTe/delay/S,CuTe · Delayed profiling · Sonnet 5,CuTe,Delayed profiling,Sonnet 5,263,0,0,44,0
 CuTe/min/S,CuTe · Minimal · Sonnet 5,CuTe,Minimal,Sonnet 5,279,0,0,56,0
+CuTe/min/S@level1-profiled-sonnet5-minimal,CuTe · Minimal · Sonnet 5,CuTe,Minimal,Sonnet 5,280,0,0,48,0
 CuTe/minstart/S,CuTe · Minimal from start · Sonnet 5,CuTe,Minimal from start,Sonnet 5,293,0,0,53,0
 CuTe/nopf/K,CuTe · No profiling · Kimi K3,CuTe,No profiling,Kimi K3,249,0,0,46,0
-CuTe/nopf/S,CuTe · No profiling · Sonnet 5,CuTe,No profiling,Sonnet 5,266,0,0,60,0
 CuTe/start/K,CuTe · Profiling from start · Kimi K3,CuTe,Profiling from start,Kimi K3,314,0,0,61,0
-CuTe/start/S,CuTe · Profiling from start · Sonnet 5,CuTe,Profiling from start,Sonnet 5,269,0,0,38,0
 CuTe→PTX/nopf/S,CuTe→PTX · No profiling · Sonnet 5,CuTe→PTX,No profiling,Sonnet 5,101,0,0,57,0
 CuTe→PTX/start/S,CuTe→PTX · Profiling from start · Sonnet 5,CuTe→PTX,Profiling from start,Sonnet 5,189,0,0,104,0
 PTX/delay/K,PTX · Delayed profiling · Kimi K3,PTX,Delayed profiling,Kimi K3,195,0,0,83,0
 PTX/delay/S,PTX · Delayed profiling · Sonnet 5,PTX,Delayed profiling,Sonnet 5,204,0,0,17,0
 PTX/nopf/K,PTX · No profiling · Kimi K3,PTX,No profiling,Kimi K3,193,0,0,50,0
-PTX/nopf/K@level1-no-profile-gpt5,PTX · No profiling · Kimi K3,PTX,No profiling,Kimi K3,37,0,0,61,0
 PTX/nopf/S,PTX · No profiling · Sonnet 5,PTX,No profiling,Sonnet 5,194,0,0,25,0
 PTX/start/K,PTX · Profiling from start · Kimi K3,PTX,Profiling from start,Kimi K3,265,0,0,65,0
 PTX/start/S,PTX · Profiling from start · Sonnet 5,PTX,Profiling from start,Sonnet 5,251,0,0,35,0
+Triton/delay/G,Triton · Delayed profiling · GPT-5,Triton,Delayed profiling,GPT-5,273,0,0,234,0
 Triton/delay/K,Triton · Delayed profiling · Kimi K3,Triton,Delayed profiling,Kimi K3,259,0,0,34,0
-Triton/delay/K@level1-profiled-gpt5,Triton · Delayed profiling · Kimi K3,Triton,Delayed profiling,Kimi K3,13,0,0,8,0
 Triton/delay/S,Triton · Delayed profiling · Sonnet 5,Triton,Delayed profiling,Sonnet 5,297,0,0,114,0
+Triton/nopf/G,Triton · No profiling · GPT-5,Triton,No profiling,GPT-5,268,0,0,254,0
 Triton/nopf/K,Triton · No profiling · Kimi K3,Triton,No profiling,Kimi K3,296,0,0,52,0
 Triton/nopf/S,Triton · No profiling · Sonnet 5,Triton,No profiling,Sonnet 5,281,0,0,104,0
 Triton/start/K,Triton · Profiling from start · Kimi K3,Triton,Profiling from start,Kimi K3,297,0,0,48,0
