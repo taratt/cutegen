@@ -124,6 +124,15 @@ _OPENAI_REASONING_MODELS = {
     "o3-mini",
     "o4-mini",
 }
+
+
+def _openai_reasoning_effort() -> str | None:
+    raw = os.environ.get("OPENAI_REASONING_EFFORT", "none").strip().lower()
+    if raw in {"", "none", "default", "off"}:
+        return None
+    return raw
+
+
 LLM_CONFIG_CODEGEN = [
     LLMConfig(
         server_type="openai",
@@ -131,7 +140,7 @@ LLM_CONFIG_CODEGEN = [
         temperature=0.5,
         is_reasoning_model=_OPENAI_MODEL in _OPENAI_REASONING_MODELS
         or _OPENAI_MODEL.startswith(("gpt-5", "o3", "o4")),
-        reasoning_effort=os.environ.get("OPENAI_REASONING_EFFORT", "high"),
+        reasoning_effort=_openai_reasoning_effort(),
         max_completion_tokens=int(os.environ.get("OPENAI_MAX_COMPLETION_TOKENS", "100000")),
     ),
 ]

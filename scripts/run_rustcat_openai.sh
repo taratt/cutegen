@@ -25,7 +25,7 @@ PROFILE="${3:-delayed}"
 
 export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://rust.cat/v1}"
 export OPENAI_MODEL="$MODEL"
-export OPENAI_REASONING_EFFORT="${OPENAI_REASONING_EFFORT:-high}"
+export OPENAI_REASONING_EFFORT="${OPENAI_REASONING_EFFORT:-none}"
 
 export CUTEGEN_BASE_PATH="$PWD"
 export CUTLASS_BASE_PATH="$PWD/cutegen/cutlass"

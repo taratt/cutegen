@@ -405,7 +405,11 @@ def query_server(
         outputs = [choice.message.content for choice in response.choices]
     elif server_type == "openai":
         if is_reasoning_model:
-            print(f"Using OpenAI reasoning model: {model} with reasoning effort {reasoning_effort}")
+            print(f"Using OpenAI reasoning model: {model}" + (
+                f" with reasoning effort {reasoning_effort}"
+                if reasoning_effort is not None
+                else " (default reasoning effort)"
+            ))
             request_kwargs = {
                 "model": model,
                 "messages": [
