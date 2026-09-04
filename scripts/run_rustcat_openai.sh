@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run cutegen experiments via rust.cat router (gpt-5 / gpt-5.6-sol / gpt-5.6-luna).
+# Run cutegen experiments via an OpenAI-compatible API
+# (rust.cat by default; set OPENAI_BASE_URL=official or OPENAI_BASE_URL= to use OpenAI).
 #
 # Usage:
 #   export OPENAI_API_KEY='sk-...'
@@ -16,6 +17,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source venv/bin/activate
+# shellcheck disable=SC1091
+if [ -f "$HOME/.cutegen_secrets" ]; then
+  set -a
+  source "$HOME/.cutegen_secrets"
+  set +a
+fi
 
 : "${OPENAI_API_KEY:?Set OPENAI_API_KEY first}"
 
@@ -23,7 +30,18 @@ MODEL="${1:-gpt-5.6-sol}"
 BACKEND="${2:-triton}"
 PROFILE="${3:-delayed}"
 
-export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://rust.cat/v1}"
+if [[ "${OPENAI_BASE_URL+x}" == "x" ]]; then
+  if [[ -z "$OPENAI_BASE_URL" || "$OPENAI_BASE_URL" == "official" || "$OPENAI_BASE_URL" == "openai" ]]; then
+    unset OPENAI_BASE_URL
+    API_PREFIX="${API_PREFIX:-openai}"
+  else
+    export OPENAI_BASE_URL="${OPENAI_BASE_URL%/}"
+    API_PREFIX="${API_PREFIX:-openai_compat}"
+  fi
+else
+  export OPENAI_BASE_URL="https://rust.cat/v1"
+  API_PREFIX="${API_PREFIX:-rustcat}"
+fi
 export OPENAI_MODEL="$MODEL"
 export OPENAI_REASONING_EFFORT="${OPENAI_REASONING_EFFORT:-none}"
 
@@ -61,8 +79,8 @@ MODEL_SLUG="${MODEL//./-}"
 export CUTEGEN_SAVE_DIR_BASE="${CUTEGEN_SAVE_DIR_BASE:-$PWD/saved_nodes/$BACKEND/level1-${SAVE_SUFFIX}-${MODEL_SLUG}}"
 export TOKEN_USAGE_CSV_PATH="${TOKEN_USAGE_CSV_PATH:-$PWD/openai_${MODEL_SLUG}_${BACKEND}_${PROFILE}.csv}"
 
-LOG="rustcat_${MODEL_SLUG}_${BACKEND}_${PROFILE}.log"
-PIDFILE="rustcat_${MODEL_SLUG}_${BACKEND}_${PROFILE}.pid"
+LOG="${LOG:-${API_PREFIX}_${MODEL_SLUG}_${BACKEND}_${PROFILE}.log}"
+PIDFILE="${PIDFILE:-${API_PREFIX}_${MODEL_SLUG}_${BACKEND}_${PROFILE}.pid}"
 
 if [[ -n "${CUTEGEN_KERNEL_IDS:-}" ]]; then
   RUN_CMD="CUTEGEN_KERNEL_IDS=$CUTEGEN_KERNEL_IDS python -u -m cutegen.main"
@@ -80,7 +98,7 @@ else
 fi
 
 echo "model=$MODEL backend=$BACKEND profile=$PROFILE"
-echo "OPENAI_BASE_URL=$OPENAI_BASE_URL"
+echo "OPENAI_BASE_URL=${OPENAI_BASE_URL:-<official>}"
 echo "save_dir=$CUTEGEN_SAVE_DIR_BASE"
 echo "token_csv=$TOKEN_USAGE_CSV_PATH"
 

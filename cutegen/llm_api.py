@@ -65,9 +65,12 @@ def _make_openai_client(api_key: str, base_url: str | None = None) -> OpenAI:
     """Create an OpenAI SDK client, with rust.cat Cloudflare workaround when needed."""
     kwargs: dict = {"api_key": api_key, "max_retries": 3}
     if base_url:
-        kwargs["base_url"] = base_url.rstrip("/")
-        # rust.cat blocks the default OpenAI SDK User-Agent.
-        kwargs["default_headers"] = {"User-Agent": OPENAI_RUSTCAT_USER_AGENT}
+        normalized_base_url = base_url.rstrip("/")
+        kwargs["base_url"] = normalized_base_url
+        # rust.cat blocks the default OpenAI SDK User-Agent; keep that workaround
+        # scoped so other OpenAI-compatible providers get normal SDK headers.
+        if "rust.cat" in normalized_base_url:
+            kwargs["default_headers"] = {"User-Agent": OPENAI_RUSTCAT_USER_AGENT}
     return OpenAI(**kwargs)
 
 def _anthropic_create_message(client, **request_kwargs):
